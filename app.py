@@ -1,6 +1,6 @@
-import os, json, uuid, threading
+import os, json, uuid, threading, subprocess, time
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
@@ -12,9 +12,12 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 @app.errorhandler(413)
 def request_too_large(_error):
     return jsonify(error="This video is too large for the current server. Please compress it or upload a video under 50 MB."), 413
+
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
+GENERATED_DIR = ROOT / "generated"
 UPLOAD_DIR.mkdir(exist_ok=True)
+GENERATED_DIR.mkdir(exist_ok=True)
 ALLOWED = {"mp4", "mov", "webm", "mkv", "avi"}
 
 
@@ -30,8 +33,7 @@ def home():
     return render_template("index.html")
 
 
-# Analysis runs in a background thread so long Gemini calls do not block
-# the web request or get killed by the web server's request timeout.
+# Reference analysis runs asynchronously so long Gemini calls do not block requests.
 analysis_jobs = {}
 analysis_jobs_lock = threading.Lock()
 
@@ -135,7 +137,7 @@ def analyze():
         analysis_jobs[job_id] = {
             "status": "PROCESSING",
             "message": "Preparing your reference video…",
-            "created_at": __import__("time").time()
+            "created_at": time.time()
         }
     try:
         thread = threading.Thread(
@@ -155,23 +157,132 @@ def analyze():
     return jsonify(job_id=job_id, status="PROCESSING"), 202
 
 
-@app.get("/api/analyze/<job_id>")
-def get_analysis_job(job_id):
-    with analysis_jobs_lock:
-        job = analysis_jobs.get(job_id)
+# Wan video generation jobs run in a background thread. The API key remains server-side.
+video_jobs = {}
+video_jobs_lock = threading.Lock()
+
+
+def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
+    input_path = GENERATED_DIR / f"{job_id}.json"
+    output_path = GENERATED_DIR / f"{job_id}.mp4"
+    try:
+        with video_jobs_lock:
+            video_jobs[job_id]["message"] = "Sending your prompt to Wan v3.0…"
+        input_path.write_text(json.dumps({
+            "prompt": prompt,
+            "duration": duration,
+            "aspectRatio": aspect_ratio,
+            "resolution": resolution
+        }), encoding="utf-8")
+        script = ROOT / "scripts" / "generate-video.mjs"
+        completed = subprocess.run(
+            ["node", str(script), str(input_path), str(output_path)],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=660,
+            env=os.environ.copy()
+        )
+        if completed.returncode != 0:
+            details = (completed.stderr or completed.stdout or "Video provider returned an unknown error.")[-2500:]
+            lowered = details.lower()
+            if "insufficient" in lowered or "credit" in lowered or "balance" in lowered:
+                friendly = "Your Vercel AI Gateway credits may be exhausted or unavailable. Check usage and billing in your Vercel dashboard. Details: " + details
+            elif "401" in lowered or "unauthorized" in lowered or "api key" in lowered:
+                friendly = "Vercel AI Gateway rejected the API key. Check AI_GATEWAY_API_KEY in this service's Render Environment."
+            elif "429" in lowered or "rate limit" in lowered:
+                friendly = "The video model is rate-limited right now. Please wait a little and retry. Details: " + details
+            else:
+                friendly = "Video generation failed. Please retry. Details: " + details
+            raise RuntimeError(friendly)
+        if not output_path.exists() or output_path.stat().st_size < 1024:
+            raise RuntimeError("The video provider returned no usable MP4 file. Please retry.")
+        with video_jobs_lock:
+            video_jobs[job_id].update(
+                status="COMPLETED", message="Your video is ready",
+                video_url=f"/api/generated/{job_id}", download_url=f"/api/generated/{job_id}?download=1"
+            )
+    except subprocess.TimeoutExpired:
+        app.logger.exception("Wan generation timed out for job %s", job_id)
+        with video_jobs_lock:
+            video_jobs[job_id].update(status="FAILED", error="Video generation took longer than 10 minutes and timed out. Please try a shorter clip.")
+    except Exception as exc:
+        app.logger.exception("Wan generation job %s failed", job_id)
+        with video_jobs_lock:
+            video_jobs[job_id].update(status="FAILED", error=str(exc)[:3000])
+    finally:
+        input_path.unlink(missing_ok=True)
+
+
+@app.post("/api/generate")
+def generate_video():
+    if not os.getenv("AI_GATEWAY_API_KEY", "").strip():
+        return jsonify(error="AI_GATEWAY_API_KEY is missing. Add it in this Render service's Environment settings."), 503
+    data = request.get_json(silent=True) or {}
+    prompt = str(data.get("prompt", "")).strip()
+    if not prompt:
+        return jsonify(error="Add a video prompt before generating."), 400
+    if len(prompt) > 20000:
+        return jsonify(error="The video prompt must be 20,000 characters or fewer."), 400
+    try:
+        duration = int(data.get("duration", 5))
+    except (TypeError, ValueError):
+        return jsonify(error="Choose a valid video duration."), 400
+    if duration < 2 or duration > 30:
+        return jsonify(error="Wan v3.0 supports clips from 2 to 30 seconds."), 400
+    aspect_ratio = str(data.get("aspect_ratio", "9:16"))
+    if aspect_ratio not in {"16:9", "4:3", "1:1", "3:4", "9:16"}:
+        return jsonify(error="Choose a supported aspect ratio."), 400
+    resolution = str(data.get("resolution", "1280x720"))
+    if resolution not in {"854x480", "1280x720", "1920x1080"}:
+        return jsonify(error="Choose a supported resolution."), 400
+    job_id = uuid.uuid4().hex
+    with video_jobs_lock:
+        video_jobs[job_id] = {"status": "PROCESSING", "message": "Preparing your generation…", "created_at": time.time()}
+    thread = threading.Thread(
+        target=run_video_job,
+        args=(job_id, prompt, duration, aspect_ratio, resolution),
+        daemon=True
+    )
+    thread.start()
+    return jsonify(job_id=job_id, status="PROCESSING"), 202
+
+
+@app.get("/api/generate/<job_id>")
+def get_video_job(job_id):
+    with video_jobs_lock:
+        job = video_jobs.get(job_id)
         if not job:
-            return jsonify(error="Analysis job not found. It may have expired after a server restart. Please upload again."), 404
+            return jsonify(error="Video job not found. It may have expired after a server restart. Please generate again."), 404
         payload = dict(job)
-    if payload["status"] == "COMPLETED":
-        return jsonify(status="COMPLETED", result=payload.get("result"))
     if payload["status"] == "FAILED":
-        return jsonify(status="FAILED", error=payload.get("error", "Analysis failed.")), payload.get("error_status", 500)
-    return jsonify(status=payload["status"], message=payload.get("message", "Analyzing…")), 200
+        return jsonify(status="FAILED", error=payload.get("error", "Video generation failed.")), 200
+    return jsonify(
+        status=payload["status"],
+        message=payload.get("message", "Generating…"),
+        video_url=payload.get("video_url"),
+        download_url=payload.get("download_url")
+    ), 200
+
+
+@app.get("/api/generated/<job_id>")
+def serve_generated_video(job_id):
+    with video_jobs_lock:
+        job = video_jobs.get(job_id)
+    if not job or job.get("status") != "COMPLETED":
+        return jsonify(error="This generated video is not available."), 404
+    path = GENERATED_DIR / f"{job_id}.mp4"
+    if not path.is_file():
+        return jsonify(error="The generated file is no longer on this server. Generate it again."), 404
+    return send_file(path, mimetype="video/mp4", as_attachment=request.args.get("download") == "1",
+                     download_name=f"reference2video-{job_id[:8]}.mp4")
 
 
 @app.get("/health")
 def health():
-    return jsonify(status="ok", app="Reference2Video", video_provider="disabled_free_mode")
+    return jsonify(
+        status="ok",
+        app="Reference2Video",
+        video_provider="wan-v3.0-video",
+        video_api_configured=bool(os.getenv("AI_GATEWAY_API_KEY", "").strip())
+    )
 
 
 if __name__ == "__main__":
