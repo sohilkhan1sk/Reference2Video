@@ -121,6 +121,8 @@ sound_design. Make prompts production-ready and original. Keep claims factual.
 
 @app.post("/api/analyze")
 def analyze():
+    if not os.getenv("GEMINI_API_KEY", "").strip():
+        return jsonify(error="GEMINI_API_KEY is not available to this Render service. Check the Environment Variables for reference2video-studio, save the change, and wait for the service to restart."), 503
     if "video" not in request.files:
         return jsonify(error="Choose a reference video first."), 400
     video = request.files["video"]
@@ -306,7 +308,8 @@ def health():
         status="ok",
         app="Reference2Video",
         video_provider="wan-v3.0-video",
-        video_api_configured=bool(os.getenv("AI_GATEWAY_API_KEY", "").strip())
+        video_api_configured=bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
+        gemini_api_configured=bool(os.getenv("GEMINI_API_KEY", "").strip())
     )
 
 
