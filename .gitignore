@@ -1,0 +1,6 @@
+.env
+.venv/
+__pycache__/
+uploads/*
+generated/*
+reference2video.sqlite3
