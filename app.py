@@ -112,13 +112,36 @@ concept, why_it_works, and 5-8 scenes. Each scene has scene, time, purpose,
 visual_prompt, video_prompt, camera_and_motion, on_screen_text, voiceover,
 sound_design. Make prompts production-ready and original. Keep claims factual.
 """
-        response = client.models.generate_content(
-            model=model, contents=[uploaded, prompt],
-            config={"response_mime_type": "application/json"}
-        )
-        return jsonify(result=json.loads(response.text or "{}"))
+        try:
+            response = client.models.generate_content(
+                model=model, contents=[uploaded, prompt],
+                config={"response_mime_type": "application/json"}
+            )
+            used_model = model
+        except Exception as primary_error:
+            # Gemini 503 means temporary model overload. Switch once to a
+            # lower-latency multimodal fallback instead of leaving the user stuck.
+            error_text = str(primary_error)
+            if "503" not in error_text and "UNAVAILABLE" not in error_text:
+                raise
+            fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
+            if not fallback_model or fallback_model == model:
+                raise
+            response = client.models.generate_content(
+                model=fallback_model, contents=[uploaded, prompt],
+                config={"response_mime_type": "application/json"}
+            )
+            used_model = fallback_model
+        result = json.loads(response.text or "{}")
+        result.setdefault("analysis_metadata", {})
+        result["analysis_metadata"]["model_used"] = used_model
+        return jsonify(result=result)
     except Exception as exc:
-        return jsonify(error=f"Analysis failed: {str(exc)}"), 500
+        message = str(exc)
+        if "503" in message or "UNAVAILABLE" in message:
+            message = ("Gemini is temporarily overloaded. Please wait 30–60 seconds and retry. "
+                       "If this continues, try again later. Details: " + message)
+        return jsonify(error=f"Analysis failed: {message}"), 503 if ("503" in str(exc) or "UNAVAILABLE" in str(exc)) else 500
 
 
 @app.post("/api/generate")
