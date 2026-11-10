@@ -162,7 +162,7 @@ sound_design. Make prompts production-ready and original. Keep claims factual.
         if "503" in message or "UNAVAILABLE" in message:
             message = ("Gemini is temporarily overloaded. Please wait 30–60 seconds and retry. "
                        "If this continues, try again later. Details: " + message)
-        return jsonify(error=f"Analysis failed: {message}"), 503 if ("503" in str(exc) or "UNAVAILABLE" in str(exc)) else 500
+        return jsonify(error=f"Analysis failed: {message}"), 503 if ("503" in str(exc) or "UNAVAILABLE" in str(exc) or "overloaded" in str(exc).lower()) else 500
 
 
 @app.post("/api/generate")
