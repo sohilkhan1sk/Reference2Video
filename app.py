@@ -157,6 +157,31 @@ def analyze():
     return jsonify(job_id=job_id, status="PROCESSING"), 202
 
 
+@app.get("/api/analyze/<job_id>")
+def get_analysis_job(job_id):
+    with analysis_jobs_lock:
+        job = analysis_jobs.get(job_id)
+        if not job:
+            return jsonify(error="Analysis job not found. It may have expired after a server restart. Please upload and analyze again."), 404
+        payload = dict(job)
+    if payload.get("status") == "FAILED":
+        return jsonify(
+            status="FAILED",
+            message=payload.get("message", "Analysis failed"),
+            error=payload.get("error", "Analysis failed.")
+        ), payload.get("error_status", 500)
+    if payload.get("status") == "COMPLETED":
+        return jsonify(
+            status="COMPLETED",
+            message=payload.get("message", "Analysis complete"),
+            result=payload.get("result", {})
+        ), 200
+    return jsonify(
+        status=payload.get("status", "PROCESSING"),
+        message=payload.get("message", "Analysis is processing…")
+    ), 200
+
+
 # Wan video generation jobs run in a background thread. The API key remains server-side.
 video_jobs = {}
 video_jobs_lock = threading.Lock()
