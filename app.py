@@ -92,7 +92,7 @@ def analyze():
     try:
         client = get_client()
         uploaded = client.files.upload(file=str(path))
-        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
         aspect = request.form.get("aspect", "Both 9:16 and 16:9")
         duration = request.form.get("duration", "30 seconds")
         niche = request.form.get("niche", "General")
