@@ -112,26 +112,47 @@ concept, why_it_works, and 5-8 scenes. Each scene has scene, time, purpose,
 visual_prompt, video_prompt, camera_and_motion, on_screen_text, voiceover,
 sound_design. Make prompts production-ready and original. Keep claims factual.
 """
-        try:
-            response = client.models.generate_content(
-                model=model, contents=[uploaded, prompt],
-                config={"response_mime_type": "application/json"}
+        # Try several video-capable Gemini models. A 503 is a temporary
+        # model-capacity failure, so move to another model before failing.
+        primary_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+        configured = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
+        if configured:
+            fallback_models = [m.strip() for m in configured.split(",") if m.strip()]
+        else:
+            legacy_fallback = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
+            fallback_models = [m for m in [
+                "gemini-3.7-flash",
+                "gemini-3.6-flash",
+                legacy_fallback or "gemini-3.5-flash-lite",
+            ] if m]
+        model_chain = list(dict.fromkeys([primary_model] + fallback_models))
+        response = None
+        used_model = None
+        failures = []
+        for candidate in model_chain:
+            try:
+                response = client.models.generate_content(
+                    model=candidate, contents=[uploaded, prompt],
+                    config={"response_mime_type": "application/json"}
+                )
+                used_model = candidate
+                break
+            except Exception as model_error:
+                error_text = str(model_error)
+                is_overload = "503" in error_text or "UNAVAILABLE" in error_text
+                failures.append(f"{candidate}: {error_text[:500]}")
+                if not is_overload:
+                    # Invalid model names, authentication errors, and malformed
+                    # requests will not improve by switching models.
+                    raise
+                app.logger.warning("Gemini model %s overloaded; trying next fallback.", candidate)
+        if response is None:
+            details = " | ".join(failures)
+            raise RuntimeError(
+                "All configured Gemini video-analysis models are temporarily overloaded. "
+                "Please retry in 1–2 minutes. Models tried: "
+                + ", ".join(model_chain) + ". Details: " + details
             )
-            used_model = model
-        except Exception as primary_error:
-            # Gemini 503 means temporary model overload. Switch once to a
-            # lower-latency multimodal fallback instead of leaving the user stuck.
-            error_text = str(primary_error)
-            if "503" not in error_text and "UNAVAILABLE" not in error_text:
-                raise
-            fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
-            if not fallback_model or fallback_model == model:
-                raise
-            response = client.models.generate_content(
-                model=fallback_model, contents=[uploaded, prompt],
-                config={"response_mime_type": "application/json"}
-            )
-            used_model = fallback_model
         result = json.loads(response.text or "{}")
         result.setdefault("analysis_metadata", {})
         result["analysis_metadata"]["model_used"] = used_model
