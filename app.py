@@ -220,7 +220,8 @@ def get_analysis_job(job_id):
 
 @app.post("/api/generate")
 def generate_clip():
-    """Submit exactly one scene only after explicit UI approval."""
+    """Paid video generation is intentionally disabled in the free version."""
+    return jsonify(error="Video generation is disabled in the free version. You can copy your scene prompts and use them in a free video tool."), 403
     payload = request.get_json(silent=True) or {}
     if payload.get("approved") is not True:
         return jsonify(error="Explicit paid-generation approval is required."), 400
@@ -344,7 +345,7 @@ def generated_file(filename):
 
 @app.get("/health")
 def health():
-    return jsonify(status="ok", app="Reference2Video", video_provider="fal.ai" if os.getenv("FAL_KEY") else "not configured")
+    return jsonify(status="ok", app="Reference2Video", video_provider="disabled_free_mode")
 
 
 if __name__ == "__main__":
