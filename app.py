@@ -9,7 +9,11 @@ from google import genai
 
 load_dotenv()
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 300 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify(error="This video is too large for the current server. Please compress it or upload a video under 50 MB."), 413
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
 GENERATED_DIR = ROOT / "generated"
