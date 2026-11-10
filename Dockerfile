@@ -11,6 +11,7 @@ COPY --from=node-deps /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-deps /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=node-deps /app/node_modules /app/node_modules
 COPY requirements.txt ./
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN mkdir -p uploads generated
