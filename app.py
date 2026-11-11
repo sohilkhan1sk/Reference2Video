@@ -1,4 +1,4 @@
-import os, json, uuid, threading, subprocess, time, shutil
+import os, json, uuid, threading, subprocess, time, shutil, hmac
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -28,6 +28,10 @@ VIDEO_RATES_USD = {"854x480": 0.05, "1280x720": 0.10, "1920x1080": 0.20}
 
 def paid_generation_enabled():
     return os.getenv("ENABLE_PAID_VIDEO_GENERATION", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def video_access_token_configured():
+    return bool(os.getenv("VIDEO_GENERATION_ACCESS_TOKEN", "").strip())
 
 
 def estimate_video_cost(duration, resolution):
@@ -293,6 +297,10 @@ def generate_video():
         return jsonify(error="This clip has not been approved. Review the prompt, tick the approval box, and confirm before generating."), 403
     if not paid_generation_enabled():
         return jsonify(error="Paid video generation is disabled by the app owner. No provider request was sent. Set ENABLE_PAID_VIDEO_GENERATION=true in Render only if you accept the provider charges."), 403
+    configured_access_token = os.getenv("VIDEO_GENERATION_ACCESS_TOKEN", "").strip()
+    supplied_access_token = str(data.get("owner_token", "")).strip()
+    if not configured_access_token or not hmac.compare_digest(supplied_access_token, configured_access_token):
+        return jsonify(error="Owner access token is missing or invalid. Set VIDEO_GENERATION_ACCESS_TOKEN privately in Render and enter it in the studio before generating."), 403
     if not os.getenv("AI_GATEWAY_API_KEY", "").strip():
         return jsonify(error="AI_GATEWAY_API_KEY is missing. Add it privately in this Render service's Environment settings."), 503
 
@@ -392,7 +400,8 @@ def health():
         video_model=VIDEO_MODEL,
         video_api_configured=bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
         paid_generation_enabled=paid_generation_enabled(),
-        video_generation_ready=paid_generation_enabled() and bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
+        video_access_token_configured=video_access_token_configured(),
+        video_generation_ready=paid_generation_enabled() and video_access_token_configured() and bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
         node_available=bool(shutil.which("node")),
         video_sdk_installed=(ROOT / "node_modules" / "ai" / "package.json").exists(),
         gemini_api_configured=bool(os.getenv("GEMINI_API_KEY", "").strip())
