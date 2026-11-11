@@ -1,4 +1,4 @@
-import os, json, uuid, threading, subprocess, time
+import os, json, uuid, threading, subprocess, time, shutil
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -19,6 +19,20 @@ GENERATED_DIR = ROOT / "generated"
 UPLOAD_DIR.mkdir(exist_ok=True)
 GENERATED_DIR.mkdir(exist_ok=True)
 ALLOWED = {"mp4", "mov", "webm", "mkv", "avi"}
+
+VIDEO_PROVIDER = "Vercel AI Gateway / Alibaba Cloud"
+VIDEO_MODEL = "alibaba/wan-v3.0-video"
+# Alibaba Cloud's published Singapore international list rates (USD per generated second).
+VIDEO_RATES_USD = {"854x480": 0.05, "1280x720": 0.10, "1920x1080": 0.20}
+
+
+def paid_generation_enabled():
+    return os.getenv("ENABLE_PAID_VIDEO_GENERATION", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def estimate_video_cost(duration, resolution):
+    rate = VIDEO_RATES_USD[resolution]
+    return rate, round(rate * duration, 2)
 
 
 def get_client():
@@ -187,6 +201,36 @@ def get_analysis_job(job_id):
 # Wan video generation jobs run in a background thread. The API key remains server-side.
 video_jobs = {}
 video_jobs_lock = threading.Lock()
+video_sdk_install_lock = threading.Lock()
+_video_sdk_ready = (ROOT / "node_modules" / "ai" / "package.json").exists()
+
+
+def ensure_video_sdk():
+    """Install the project dependency on first use when Render's Python build skipped npm."""
+    global _video_sdk_ready
+    sdk_manifest = ROOT / "node_modules" / "ai" / "package.json"
+    if _video_sdk_ready and sdk_manifest.exists():
+        return
+    with video_sdk_install_lock:
+        if sdk_manifest.exists():
+            _video_sdk_ready = True
+            return
+        if not shutil.which("node"):
+            raise RuntimeError("Node.js is not available on this Render instance; the video worker cannot start.")
+        if not shutil.which("npm"):
+            raise RuntimeError("npm is not available on this Render instance; install the AI SDK during the Render build.")
+        try:
+            completed = subprocess.run(
+                ["npm", "install", "--omit=dev", "--no-audit", "--no-fund"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=240,
+                env=os.environ.copy()
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Installing the video-generation SDK timed out. Please retry after the service is stable.")
+        if completed.returncode != 0 or not sdk_manifest.exists():
+            details = (completed.stderr or completed.stdout or "npm install did not create node_modules/ai.")[-1800:]
+            raise RuntimeError("Could not prepare the video-generation SDK. Check the Render build environment. Details: " + details)
+        _video_sdk_ready = True
 
 
 def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
@@ -194,7 +238,10 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
     output_path = GENERATED_DIR / f"{job_id}.mp4"
     try:
         with video_jobs_lock:
-            video_jobs[job_id]["message"] = "Sending your prompt to Wan v3.0…"
+            video_jobs[job_id]["message"] = "Preparing the video-generation runtime…"
+        ensure_video_sdk()
+        with video_jobs_lock:
+            video_jobs[job_id]["message"] = "Sending your approved prompt to Wan v3.0…"
         input_path.write_text(json.dumps({
             "prompt": prompt,
             "duration": duration,
@@ -240,9 +287,15 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
 
 @app.post("/api/generate")
 def generate_video():
-    if not os.getenv("AI_GATEWAY_API_KEY", "").strip():
-        return jsonify(error="AI_GATEWAY_API_KEY is missing. Add it in this Render service's Environment settings."), 503
     data = request.get_json(silent=True) or {}
+    # Two independent gates: an owner-controlled server switch and per-clip user approval.
+    if data.get("approved") is not True:
+        return jsonify(error="This clip has not been approved. Review the prompt, tick the approval box, and confirm before generating."), 403
+    if not paid_generation_enabled():
+        return jsonify(error="Paid video generation is disabled by the app owner. No provider request was sent. Set ENABLE_PAID_VIDEO_GENERATION=true in Render only if you accept the provider charges."), 403
+    if not os.getenv("AI_GATEWAY_API_KEY", "").strip():
+        return jsonify(error="AI_GATEWAY_API_KEY is missing. Add it privately in this Render service's Environment settings."), 503
+
     prompt = str(data.get("prompt", "")).strip()
     if not prompt:
         return jsonify(error="Add a video prompt before generating."), 400
@@ -258,18 +311,41 @@ def generate_video():
     if aspect_ratio not in {"16:9", "4:3", "1:1", "3:4", "9:16"}:
         return jsonify(error="Choose a supported aspect ratio."), 400
     resolution = str(data.get("resolution", "1280x720"))
-    if resolution not in {"854x480", "1280x720", "1920x1080"}:
+    if resolution not in VIDEO_RATES_USD:
         return jsonify(error="Choose a supported resolution."), 400
+
+    rate_per_second, estimated_cost = estimate_video_cost(duration, resolution)
     job_id = uuid.uuid4().hex
     with video_jobs_lock:
-        video_jobs[job_id] = {"status": "PROCESSING", "message": "Preparing your generation…", "created_at": time.time()}
+        video_jobs[job_id] = {
+            "status": "PROCESSING",
+            "message": "Preparing your approved generation…",
+            "created_at": time.time(),
+            "approved_at": time.time(),
+            "provider": VIDEO_PROVIDER,
+            "model": VIDEO_MODEL,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "rate_per_second_usd": rate_per_second,
+            "estimated_cost_usd": estimated_cost
+        }
     thread = threading.Thread(
         target=run_video_job,
         args=(job_id, prompt, duration, aspect_ratio, resolution),
         daemon=True
     )
     thread.start()
-    return jsonify(job_id=job_id, status="PROCESSING"), 202
+    return jsonify(
+        job_id=job_id,
+        status="PROCESSING",
+        provider=VIDEO_PROVIDER,
+        model=VIDEO_MODEL,
+        duration=duration,
+        resolution=resolution,
+        rate_per_second_usd=rate_per_second,
+        estimated_cost_usd=estimated_cost
+    ), 202
 
 
 @app.get("/api/generate/<job_id>")
@@ -285,7 +361,12 @@ def get_video_job(job_id):
         status=payload["status"],
         message=payload.get("message", "Generating…"),
         video_url=payload.get("video_url"),
-        download_url=payload.get("download_url")
+        download_url=payload.get("download_url"),
+        provider=payload.get("provider"),
+        model=payload.get("model"),
+        duration=payload.get("duration"),
+        resolution=payload.get("resolution"),
+        estimated_cost_usd=payload.get("estimated_cost_usd")
     ), 200
 
 
@@ -307,8 +388,13 @@ def health():
     return jsonify(
         status="ok",
         app="Reference2Video",
-        video_provider="wan-v3.0-video",
+        video_provider=VIDEO_PROVIDER,
+        video_model=VIDEO_MODEL,
         video_api_configured=bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
+        paid_generation_enabled=paid_generation_enabled(),
+        video_generation_ready=paid_generation_enabled() and bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
+        node_available=bool(shutil.which("node")),
+        video_sdk_installed=(ROOT / "node_modules" / "ai" / "package.json").exists(),
         gemini_api_configured=bool(os.getenv("GEMINI_API_KEY", "").strip())
     )
 
