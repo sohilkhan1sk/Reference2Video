@@ -16,6 +16,7 @@ Reference2Video is a browser-based Flask app for reference-video analysis, three
 - Model ID: `alibaba/wan-v3.0-video`.
 - Required secret: `AI_GATEWAY_API_KEY` (store only in Render Environment).
 - Required owner switch: `ENABLE_PAID_VIDEO_GENERATION=true`. It defaults to false.
+- Required owner-only access secret: `VIDEO_GENERATION_ACCESS_TOKEN`. The public page asks for this token; it is held only in the page field and sent over HTTPS with each approved request. It is not saved in browser storage.
 - Published Alibaba Cloud Singapore international list rates: 480p $0.05/second, 720p $0.10/second, 1080p $0.20/second. The app shows an estimate before each request. Gateway rates, promotions, taxes and final billing may differ; verify the live provider price before approval.
 - Vercel's model page says eligible free users who have not made a payment may receive $5 of credits every 30 days. Eligibility and terms can change; this is not unlimited free video generation.
 
@@ -51,9 +52,10 @@ Required Render environment variables:
 - `GEMINI_API_KEY` — required for reference analysis.
 - `GEMINI_MODEL` — optional; defaults are defined in `app.py`.
 
-Optional paid video generation:
+Optional paid video generation (all three settings are required):
 - `AI_GATEWAY_API_KEY` — required for Wan v3.0.
 - `ENABLE_PAID_VIDEO_GENERATION` — leave unset or false to keep generation locked; set to `true` only after accepting provider costs.
+- `VIDEO_GENERATION_ACCESS_TOKEN` — a long random owner-only secret. Generate one locally, for example with `python -c "import secrets; print(secrets.token_urlsafe(32))"`, add it privately to Render, then enter the same value in the Owner Access Token field in the studio. Do not put it in GitHub, a public prompt, or chat.
 
 Never commit API keys or send them in chat.
 
