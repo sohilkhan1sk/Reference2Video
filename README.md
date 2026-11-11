@@ -1,34 +1,70 @@
-# Reference2Video — Free AI Creative Studio
+# Reference2Video — AI Creative Studio
 
-A browser-based Flask app for reference-video analysis, three original concepts, editable scene storyboards, and JSON export.
+Reference2Video is a browser-based Flask app for reference-video analysis, three original creative concepts, editable scene storyboards, JSON export, and optional per-scene AI video generation.
 
-## Free workflow
+## Current workflow
 
-- Render hosting uses the free service plan, subject to Render's free-plan limits and availability.
-- Gemini video analysis requires a Google Gemini API key. Google's API free-tier availability and quotas depend on the model, account, and region; analysis is not unlimited.
-- Paid fal.ai/Kling integration, billing code, and API-key requirement have been removed.
-- Each scene has a copy-prompt action and direct links to free/limited free video services:
-  - Google Vids: Google announced 10 no-cost video generations per month for personal Google accounts; availability and terms can change.
-  - Wan2.Video: public Wan/LTX demos; queues and usage limits may apply, and it is a third-party site.
-  - Clipchamp: free browser editor for assembling clips; personal free plan supports watermark-free exports up to 1080p.
-- The external services have their own accounts, limits, privacy terms, watermarks, and commercial-use rules. Reference2Video does not call their APIs or guarantee free generation.
+1. Upload a reference video (MP4, MOV, WEBM, MKV or AVI; maximum 50 MB).
+2. Gemini analyzes the visual language, editing rhythm, camera, color, graphics, audio and structure.
+3. Review three original concepts and choose one.
+4. Edit every scene prompt manually and export the storyboard JSON.
+5. Optionally generate individual scene clips with Wan v3.0. Every clip requires a per-scene checkbox and browser confirmation. The server also has an owner-controlled safety switch; paid generation is disabled unless explicitly enabled in Render.
 
-## Render settings
+## Video provider, model and cost
 
-Build: `pip install -r requirements.txt`
+- Provider: Vercel AI Gateway, routed to Alibaba Cloud.
+- Model ID: `alibaba/wan-v3.0-video`.
+- Required secret: `AI_GATEWAY_API_KEY` (store only in Render Environment).
+- Required owner switch: `ENABLE_PAID_VIDEO_GENERATION=true`. It defaults to false.
+- Published Alibaba Cloud Singapore international list rates: 480p $0.05/second, 720p $0.10/second, 1080p $0.20/second. The app shows an estimate before each request. Gateway rates, promotions, taxes and final billing may differ; verify the live provider price before approval.
+- Vercel's model page says eligible free users who have not made a payment may receive $5 of credits every 30 days. Eligibility and terms can change; this is not unlimited free video generation.
 
-Start: `gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180`
+Pricing references:
+- [Vercel AI Gateway — Wan v3.0](https://vercel.com/ai-gateway/models/wan-v3.0-video)
+- [Alibaba Cloud Model Studio — Wan 3.0 pricing](https://www.alibabacloud.com/help/en/model-studio/wan3-0-video)
 
-Set `GEMINI_API_KEY` in Render Environment. No `FAL_KEY` is needed. Never commit API keys.
+**No paid generation is started by analysis or storyboard creation.** To use it, the owner must first add the API key and deliberately enable the server switch; then each individual scene still requires the user to review the prompt, tick approval and confirm the estimated charge.
 
-## Features
+## Render deployment
 
-- MP4, MOV, WEBM, MKV, AVI uploads (max 50 MB)
-- Gemini video style, editing, camera, graphics, audio and structure analysis
-- Three original concepts with scene storyboards
-- Editable scene prompts and JSON export
-- Copy individual scene video prompts
-- Direct links to free/limited free clip generation and editing tools
-- 9:16 and 16:9 prompt planning
+Build command:
 
-Render's default filesystem is ephemeral. Uploaded videos and in-memory analysis jobs may be lost on restart or redeploy.
+```bash
+pip install -r requirements.txt
+```
+
+Recommended build command if you want to preinstall the video SDK instead of waiting for the first approved clip:
+
+```bash
+pip install -r requirements.txt && npm install --omit=dev --no-audit --no-fund
+```
+
+Start command:
+
+```bash
+gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180
+```
+
+The current app can install the Node AI SDK on the first approved video request if Render did not install it during the build. Node.js and npm must be available on the instance.
+
+Required Render environment variables:
+- `GEMINI_API_KEY` — required for reference analysis.
+- `GEMINI_MODEL` — optional; defaults are defined in `app.py`.
+
+Optional paid video generation:
+- `AI_GATEWAY_API_KEY` — required for Wan v3.0.
+- `ENABLE_PAID_VIDEO_GENERATION` — leave unset or false to keep generation locked; set to `true` only after accepting provider costs.
+
+Never commit API keys or send them in chat.
+
+## Features and limitations
+
+- Reference uploads up to 50 MB.
+- Gemini video analysis and three original concepts.
+- Editable scene prompts and storyboard JSON export.
+- Per-scene duration, aspect ratio and resolution controls.
+- Per-scene approval checkbox, confirmation prompt and approximate cost estimate.
+- Background clip-generation jobs, in-page MP4 preview and download.
+- 9:16 and 16:9 output options (plus square in the clip control).
+
+Video jobs and analysis jobs are currently held in process memory, and uploaded/generated files are on Render's ephemeral filesystem. A restart or redeploy can remove job state and files. This MVP does not yet assemble multiple clips, generate voiceover tracks, mix sound effects, or export a finished multi-scene project MP4.
