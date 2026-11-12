@@ -67,6 +67,16 @@ Never commit API keys or send them in chat.
 - Per-scene duration, aspect ratio and resolution controls.
 - Per-scene approval checkbox, confirmation prompt and approximate cost estimate.
 - Background clip-generation jobs, in-page MP4 preview and download.
+- Owner-only recent generation history, persisted job status and resume-tracking controls.
 - 9:16 and 16:9 output options (plus square in the clip control).
 
-Video jobs and analysis jobs are currently held in process memory, and uploaded/generated files are on Render's ephemeral filesystem. A restart or redeploy can remove job state and files. This MVP does not yet assemble multiple clips, generate voiceover tracks, mix sound effects, or export a finished multi-scene project MP4.
+## Video job history storage
+
+The app now stores video-generation job metadata in a database instead of keeping it only in a Python dictionary. It supports two modes:
+
+- **PostgreSQL (recommended for a deployed service):** set `DATABASE_URL` to a Render PostgreSQL connection string. The app uses `psycopg` and creates the `video_jobs` table automatically. Job status, model, format, timestamps, estimates and errors survive app restarts.
+- **SQLite fallback:** if `DATABASE_URL` is not set, the app creates `reference2video.sqlite3` in the project directory. This is convenient for local development, but Render's free web-service filesystem is ephemeral; the SQLite file may be lost when the instance is replaced or redeployed.
+
+The **Load history** panel is protected by the same `VIDEO_GENERATION_ACCESS_TOKEN` as paid generation. It lists the latest 20 jobs and lets the owner resume polling a still-running job. Abandoned `PROCESSING` jobs are marked interrupted after 20 minutes (the current worker timeout is 11 minutes).
+
+**Important media limitation:** this increment persists job metadata only. MP4 files are still stored on the web-service filesystem, not object storage. Even with PostgreSQL, a generated MP4 can disappear after a redeploy; the history page will identify a missing file. The next storage increment should move MP4 artifacts to durable object storage before building multi-clip FFmpeg exports. Analysis jobs remain in process memory, and the app still does not assemble multiple clips, generate voiceover tracks, mix sound effects, or export a finished multi-scene project MP4.
