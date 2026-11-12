@@ -3,4 +3,4 @@
 __pycache__/
 uploads/*
 generated/*
-reference2video.sqlite3
+reference2video.sqlite3*
