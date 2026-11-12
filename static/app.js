@@ -18,7 +18,7 @@ async function pollVideoJob(jobId,output,button,timer){try{const response=await 
 function renderRecentJobs(jobs,store){
 const box=document.getElementById('recentJobs'),status=document.getElementById('historyStatus');
 if(!box)return;
-if(status)status.textContent='Loaded '+jobs.length+' recent jobs from '+(store||'the job store')+'.';
+if(status){const note=store==='postgres'?'PostgreSQL keeps job metadata across restarts; MP4 files still use temporary local storage.':'SQLite is local to this Render instance and may be lost on redeploy; MP4 files are also temporary.';status.textContent='Loaded '+jobs.length+' recent jobs from '+(store||'the job store')+'. '+note;}
 if(!jobs.length){box.innerHTML='<p class="history-empty">No video-generation jobs have been recorded yet.</p>';return;}
 box.innerHTML=jobs.map(job=>{
 const created=job.created_at?new Date(Number(job.created_at)*1000).toLocaleString():'Date unknown';
