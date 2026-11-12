@@ -4,6 +4,11 @@ from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
+from job_store import (
+    init_job_store, create_video_job, update_video_job,
+    get_video_job_record, list_video_job_records, mark_stale_video_jobs,
+    job_store_backend,
+)
 
 load_dotenv()
 app = Flask(__name__)
@@ -18,6 +23,8 @@ UPLOAD_DIR = ROOT / "uploads"
 GENERATED_DIR = ROOT / "generated"
 UPLOAD_DIR.mkdir(exist_ok=True)
 GENERATED_DIR.mkdir(exist_ok=True)
+init_job_store()
+mark_stale_video_jobs()
 ALLOWED = {"mp4", "mov", "webm", "mkv", "avi"}
 
 VIDEO_PROVIDER = "Vercel AI Gateway / Alibaba Cloud"
@@ -203,8 +210,6 @@ def get_analysis_job(job_id):
 
 
 # Wan video generation jobs run in a background thread. The API key remains server-side.
-video_jobs = {}
-video_jobs_lock = threading.Lock()
 video_sdk_install_lock = threading.Lock()
 _video_sdk_ready = (ROOT / "node_modules" / "ai" / "package.json").exists()
 
@@ -241,11 +246,9 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
     input_path = GENERATED_DIR / f"{job_id}.json"
     output_path = GENERATED_DIR / f"{job_id}.mp4"
     try:
-        with video_jobs_lock:
-            video_jobs[job_id]["message"] = "Preparing the video-generation runtime…"
+        update_video_job(job_id, message="Preparing the video-generation runtime…")
         ensure_video_sdk()
-        with video_jobs_lock:
-            video_jobs[job_id]["message"] = "Sending your approved prompt to Wan v3.0…"
+        update_video_job(job_id, message="Sending your approved prompt to Wan v3.0…")
         input_path.write_text(json.dumps({
             "prompt": prompt,
             "duration": duration,
@@ -272,19 +275,23 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
             raise RuntimeError(friendly)
         if not output_path.exists() or output_path.stat().st_size < 1024:
             raise RuntimeError("The video provider returned no usable MP4 file. Please retry.")
-        with video_jobs_lock:
-            video_jobs[job_id].update(
-                status="COMPLETED", message="Your video is ready",
-                video_url=f"/api/generated/{job_id}", download_url=f"/api/generated/{job_id}?download=1"
-            )
+        update_video_job(
+            job_id, status="COMPLETED", message="Your video is ready",
+            video_url=f"/api/generated/{job_id}",
+            download_url=f"/api/generated/{job_id}?download=1"
+        )
     except subprocess.TimeoutExpired:
         app.logger.exception("Wan generation timed out for job %s", job_id)
-        with video_jobs_lock:
-            video_jobs[job_id].update(status="FAILED", error="Video generation took longer than 10 minutes and timed out. Please try a shorter clip.")
+        update_video_job(
+            job_id, status="FAILED", message="Video generation timed out",
+            error="Video generation took longer than 10 minutes and timed out. Please try a shorter clip."
+        )
     except Exception as exc:
         app.logger.exception("Wan generation job %s failed", job_id)
-        with video_jobs_lock:
-            video_jobs[job_id].update(status="FAILED", error=str(exc)[:3000])
+        update_video_job(
+            job_id, status="FAILED", message="Video generation failed",
+            error=str(exc)[:3000]
+        )
     finally:
         input_path.unlink(missing_ok=True)
 
@@ -324,20 +331,20 @@ def generate_video():
 
     rate_per_second, estimated_cost = estimate_video_cost(duration, resolution)
     job_id = uuid.uuid4().hex
-    with video_jobs_lock:
-        video_jobs[job_id] = {
-            "status": "PROCESSING",
-            "message": "Preparing your approved generation…",
-            "created_at": time.time(),
-            "approved_at": time.time(),
-            "provider": VIDEO_PROVIDER,
-            "model": VIDEO_MODEL,
-            "duration": duration,
-            "aspect_ratio": aspect_ratio,
-            "resolution": resolution,
-            "rate_per_second_usd": rate_per_second,
-            "estimated_cost_usd": estimated_cost
-        }
+    create_video_job(
+        job_id,
+        status="PROCESSING",
+        message="Preparing your approved generation…",
+        created_at=time.time(),
+        approved_at=time.time(),
+        provider=VIDEO_PROVIDER,
+        model=VIDEO_MODEL,
+        duration=duration,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        rate_per_second_usd=rate_per_second,
+        estimated_cost_usd=estimated_cost,
+    )
     thread = threading.Thread(
         target=run_video_job,
         args=(job_id, prompt, duration, aspect_ratio, resolution),
@@ -358,11 +365,10 @@ def generate_video():
 
 @app.get("/api/generate/<job_id>")
 def get_video_job(job_id):
-    with video_jobs_lock:
-        job = video_jobs.get(job_id)
-        if not job:
-            return jsonify(error="Video job not found. It may have expired after a server restart. Please generate again."), 404
-        payload = dict(job)
+    mark_stale_video_jobs()
+    payload = get_video_job_record(job_id)
+    if not payload:
+        return jsonify(error="Video job not found. It may have expired after a server restart. Please generate again."), 404
     if payload["status"] == "FAILED":
         return jsonify(status="FAILED", error=payload.get("error", "Video generation failed.")), 200
     return jsonify(
@@ -378,10 +384,38 @@ def get_video_job(job_id):
     ), 200
 
 
+@app.get("/api/jobs")
+def list_recent_video_jobs():
+    configured_access_token = os.getenv("VIDEO_GENERATION_ACCESS_TOKEN", "").strip()
+    supplied_access_token = request.headers.get("X-Owner-Token", "").strip()
+    if not configured_access_token or not hmac.compare_digest(supplied_access_token, configured_access_token):
+        return jsonify(error="Owner access token is missing or invalid. Enter the token configured privately in Render to view generation history."), 403
+    mark_stale_video_jobs()
+    jobs = []
+    for job in list_video_job_records(20):
+        job_id = job["job_id"]
+        artifact_path = GENERATED_DIR / f"{job_id}.mp4"
+        jobs.append({
+            "job_id": job_id,
+            "status": job["status"],
+            "message": job.get("message"),
+            "error": job.get("error"),
+            "created_at": job.get("created_at"),
+            "provider": job.get("provider"),
+            "model": job.get("model"),
+            "duration": job.get("duration"),
+            "aspect_ratio": job.get("aspect_ratio"),
+            "resolution": job.get("resolution"),
+            "estimated_cost_usd": job.get("estimated_cost_usd"),
+            "video_url": job.get("video_url"),
+            "download_url": job.get("download_url"),
+            "artifact_available": job["status"] == "COMPLETED" and artifact_path.is_file(),
+        })
+    return jsonify(jobs=jobs, store=job_store_backend()), 200
+
 @app.get("/api/generated/<job_id>")
 def serve_generated_video(job_id):
-    with video_jobs_lock:
-        job = video_jobs.get(job_id)
+    job = get_video_job_record(job_id)
     if not job or job.get("status") != "COMPLETED":
         return jsonify(error="This generated video is not available."), 404
     path = GENERATED_DIR / f"{job_id}.mp4"
@@ -404,6 +438,7 @@ def health():
         video_generation_ready=paid_generation_enabled() and video_access_token_configured() and bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
         node_available=bool(shutil.which("node")),
         video_sdk_installed=(ROOT / "node_modules" / "ai" / "package.json").exists(),
+        job_store_backend=job_store_backend(),
         gemini_api_configured=bool(os.getenv("GEMINI_API_KEY", "").strip())
     )
 
