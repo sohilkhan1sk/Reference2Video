@@ -7,6 +7,9 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
