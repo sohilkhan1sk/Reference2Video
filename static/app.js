@@ -35,7 +35,7 @@ document.querySelectorAll('.resume-history').forEach(button=>button.addEventList
 const jobId=button.dataset.job,output=document.getElementById('resume-out-'+jobId);
 button.disabled=true;
 output.innerHTML='<div class="generation-status"><span class="spinner"></span><span id="gen-message">Reconnecting to the saved job…</span><strong id="gen-time">--:--</strong></div>';
-const timer=setInterval(()=>{const clock=output.querySelector('#gen-time');if(clock)clock.textContent=new Date().toLocaleTimeString();},1000);
+const started=Date.now();const timer=setInterval(()=>{const clock=output.querySelector('#gen-time');if(clock)clock.textContent=formatElapsed(Date.now()-started);},1000);
 pollVideoJob(jobId,output,button,timer);
 }));
 }
