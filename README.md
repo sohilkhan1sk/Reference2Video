@@ -79,4 +79,41 @@ The app now stores video-generation job metadata in a database instead of keepin
 
 The **Load history** panel is protected by the same `VIDEO_GENERATION_ACCESS_TOKEN` as paid generation. It lists the latest 20 jobs and lets the owner resume polling a still-running job. Abandoned `PROCESSING` jobs are marked interrupted after 20 minutes (the current worker timeout is 11 minutes).
 
-**Important media limitation:** this increment persists job metadata only. MP4 files are still stored on the web-service filesystem, not object storage. Even with PostgreSQL, a generated MP4 can disappear after a redeploy; the history page will identify a missing file. The next storage increment should move MP4 artifacts to durable object storage before building multi-clip FFmpeg exports. Analysis jobs remain in process memory, and the app still does not assemble multiple clips, generate voiceover tracks, mix sound effects, or export a finished multi-scene project MP4.
+## Durable generated-video storage
+
+Generated MP4s can now be uploaded to a **private S3-compatible object bucket** after the provider finishes rendering. Supported targets include Cloudflare R2, AWS S3, and other S3-compatible services. The bucket is never made public: the app redirects playback/download requests to short-lived presigned GET URLs.
+
+Set these variables in Render Environment (or your local `.env`):
+
+- `S3_BUCKET` — private bucket name.
+- `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` — credentials restricted to this bucket and the `S3_PREFIX` path.
+- `S3_ENDPOINT_URL` — required for R2 and most compatible providers; omit for standard AWS S3.
+- `S3_REGION` — use `auto` for Cloudflare R2, or the bucket's region for AWS S3.
+- `S3_PREFIX` — optional object prefix; defaults to `reference2video`.
+- `S3_PRESIGNED_URL_TTL_SECONDS` — optional signed-link lifetime; defaults to 3600 seconds and is clamped to 60–604800 seconds.
+
+### Cloudflare R2 example
+
+1. Create a private R2 bucket; do not enable public access.
+2. Create an R2 S3 API token with Object Read & Write permission scoped to that bucket.
+3. Copy the account-specific S3 endpoint shown by Cloudflare.
+4. Add the bucket, access key, secret, endpoint, and `S3_REGION=auto` to Render Environment.
+5. Save the settings and wait for Render to restart. The public `/health` endpoint reports only whether storage is configured; it never returns credentials.
+
+Example values (replace every placeholder; do not commit real values):
+
+```dotenv
+S3_ENDPOINT_URL=https://YOUR_ACCOUNT_ID.r2.cloudflarestorage.com
+S3_BUCKET=your-private-video-bucket
+S3_ACCESS_KEY_ID=your_r2_access_key
+S3_SECRET_ACCESS_KEY=your_r2_secret_key
+S3_REGION=auto
+S3_PREFIX=reference2video
+S3_PRESIGNED_URL_TTL_SECONDS=3600
+```
+
+For AWS S3, omit `S3_ENDPOINT_URL`, set `S3_REGION` to the bucket's region, and use an IAM access key with only the required `s3:PutObject`, `s3:GetObject`, and `s3:HeadObject` permissions under the configured prefix.
+
+If these settings are absent, the app safely falls back to local storage and displays a warning. If an upload fails after a provider has already generated a clip, the app marks the clip completed and keeps the local MP4 rather than encouraging a second paid generation; download it before the next redeploy. The history endpoint checks object availability, and completed clip links create a new short-lived signed URL when opened.
+
+**Remaining limitations:** job metadata is still in SQLite unless `DATABASE_URL` is configured; no Render PostgreSQL instance is currently provisioned. Analysis jobs remain in process memory. The app still does not assemble multiple clips, generate voiceover tracks, mix sound effects, or export a finished multi-scene project MP4. Durable MP4 storage is now in place as the foundation for that FFmpeg assembly phase.
