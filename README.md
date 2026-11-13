@@ -112,7 +112,7 @@ S3_PREFIX=reference2video
 S3_PRESIGNED_URL_TTL_SECONDS=3600
 ```
 
-For AWS S3, omit `S3_ENDPOINT_URL`, set `S3_REGION` to the bucket's region, and use an IAM access key with only the required `s3:PutObject`, `s3:GetObject`, and `s3:HeadObject` permissions under the configured prefix.
+For AWS S3, omit `S3_ENDPOINT_URL`, set `S3_REGION` to the bucket's region, and use an IAM access key with `s3:PutObject` and `s3:GetObject` permissions restricted to the configured prefix. S3 `HeadObject` checks are authorized by `s3:GetObject`.
 
 If these settings are absent, the app safely falls back to local storage and displays a warning. If an upload fails after a provider has already generated a clip, the app marks the clip completed and keeps the local MP4 rather than encouraging a second paid generation; download it before the next redeploy. The history endpoint checks object availability, and completed clip links create a new short-lived signed URL when opened.
 
