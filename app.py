@@ -1,6 +1,6 @@
 import os, json, uuid, threading, subprocess, time, shutil, hmac
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, redirect
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
@@ -8,6 +8,10 @@ from job_store import (
     init_job_store, create_video_job, update_video_job,
     get_video_job_record, list_video_job_records, mark_stale_video_jobs,
     job_store_backend,
+)
+from media_store import (
+    media_storage_configured, media_storage_backend, upload_video_file,
+    object_exists, presigned_video_url,
 )
 
 load_dotenv()
@@ -275,10 +279,32 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
             raise RuntimeError(friendly)
         if not output_path.exists() or output_path.stat().st_size < 1024:
             raise RuntimeError("The video provider returned no usable MP4 file. Please retry.")
+        media_uri = None
+        storage_warning = None
+        if media_storage_configured():
+            update_video_job(job_id, message="Uploading the finished MP4 to private object storage…")
+            try:
+                media_uri = upload_video_file(output_path, job_id)
+                output_path.unlink(missing_ok=True)
+            except Exception as storage_error:
+                # The provider has already generated (and potentially billed for) this clip.
+                # Preserve the local artifact and mark the job complete rather than prompting
+                # the user to repeat a paid generation.
+                storage_warning = str(storage_error)[:1200]
+                app.logger.exception("Durable media upload failed for job %s", job_id)
+
+        if media_uri:
+            ready_message = "Video ready — saved in durable private object storage"
+        elif storage_warning:
+            ready_message = "Video ready, but durable upload failed. Download it before a server restart or redeploy."
+        else:
+            ready_message = "Video ready — temporary server storage. Configure S3-compatible storage to retain it across redeploys."
+
         update_video_job(
-            job_id, status="COMPLETED", message="Your video is ready",
-            video_url=f"/api/generated/{job_id}",
-            download_url=f"/api/generated/{job_id}?download=1"
+            job_id, status="COMPLETED", message=ready_message,
+            video_url=media_uri or f"/api/generated/{job_id}",
+            download_url=f"/api/generated/{job_id}?download=1",
+            error=storage_warning
         )
     except subprocess.TimeoutExpired:
         app.logger.exception("Wan generation timed out for job %s", job_id)
@@ -371,11 +397,12 @@ def get_video_job(job_id):
         return jsonify(error="Video job not found. It may have expired after a server restart. Please generate again."), 404
     if payload["status"] == "FAILED":
         return jsonify(status="FAILED", error=payload.get("error", "Video generation failed.")), 200
+    completed = payload["status"] == "COMPLETED"
     return jsonify(
         status=payload["status"],
         message=payload.get("message", "Generating…"),
-        video_url=payload.get("video_url"),
-        download_url=payload.get("download_url"),
+        video_url=f"/api/generated/{job_id}" if completed else None,
+        download_url=f"/api/generated/{job_id}?download=1" if completed else None,
         provider=payload.get("provider"),
         model=payload.get("model"),
         duration=payload.get("duration"),
@@ -395,6 +422,17 @@ def list_recent_video_jobs():
     for job in list_video_job_records(20):
         job_id = job["job_id"]
         artifact_path = GENERATED_DIR / f"{job_id}.mp4"
+        stored_uri = job.get("video_url") or ""
+        if str(stored_uri).startswith("s3://"):
+            try:
+                artifact_available = object_exists(stored_uri)
+            except Exception:
+                app.logger.exception("Could not verify stored MP4 for job %s", job_id)
+                artifact_available = False
+            artifact_backend = "s3"
+        else:
+            artifact_available = job["status"] == "COMPLETED" and artifact_path.is_file()
+            artifact_backend = "local"
         jobs.append({
             "job_id": job_id,
             "status": job["status"],
@@ -407,20 +445,38 @@ def list_recent_video_jobs():
             "aspect_ratio": job.get("aspect_ratio"),
             "resolution": job.get("resolution"),
             "estimated_cost_usd": job.get("estimated_cost_usd"),
-            "video_url": job.get("video_url"),
-            "download_url": job.get("download_url"),
-            "artifact_available": job["status"] == "COMPLETED" and artifact_path.is_file(),
+            "video_url": f"/api/generated/{job_id}" if job["status"] == "COMPLETED" else None,
+            "download_url": f"/api/generated/{job_id}?download=1" if job["status"] == "COMPLETED" else None,
+            "artifact_storage_backend": artifact_backend,
+            "artifact_available": job["status"] == "COMPLETED" and artifact_available,
         })
-    return jsonify(jobs=jobs, store=job_store_backend()), 200
+    return jsonify(
+        jobs=jobs,
+        store=job_store_backend(),
+        media_storage_backend=media_storage_backend(),
+        media_storage_configured=media_storage_configured(),
+    ), 200
 
 @app.get("/api/generated/<job_id>")
 def serve_generated_video(job_id):
     job = get_video_job_record(job_id)
     if not job or job.get("status") != "COMPLETED":
         return jsonify(error="This generated video is not available."), 404
+
+    stored_uri = job.get("video_url") or ""
+    if str(stored_uri).startswith("s3://"):
+        try:
+            signed_url = presigned_video_url(
+                stored_uri, download=request.args.get("download") == "1"
+            )
+        except Exception:
+            app.logger.exception("Could not create a private media URL for job %s", job_id)
+            return jsonify(error="The stored MP4 could not be accessed. Check the S3-compatible storage credentials and bucket permissions."), 503
+        return redirect(signed_url, code=302)
+
     path = GENERATED_DIR / f"{job_id}.mp4"
     if not path.is_file():
-        return jsonify(error="The generated file is no longer on this server. Generate it again."), 404
+        return jsonify(error="The generated file is no longer on this server. Configure durable media storage before generating more clips."), 404
     return send_file(path, mimetype="video/mp4", as_attachment=request.args.get("download") == "1",
                      download_name=f"reference2video-{job_id[:8]}.mp4")
 
@@ -439,6 +495,8 @@ def health():
         node_available=bool(shutil.which("node")),
         video_sdk_installed=(ROOT / "node_modules" / "ai" / "package.json").exists(),
         job_store_backend=job_store_backend(),
+        media_storage_backend=media_storage_backend(),
+        media_storage_configured=media_storage_configured(),
         gemini_api_configured=bool(os.getenv("GEMINI_API_KEY", "").strip())
     )
 
