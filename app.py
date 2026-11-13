@@ -285,7 +285,6 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
             update_video_job(job_id, message="Uploading the finished MP4 to private object storage…")
             try:
                 media_uri = upload_video_file(output_path, job_id)
-                output_path.unlink(missing_ok=True)
             except Exception as storage_error:
                 # The provider has already generated (and potentially billed for) this clip.
                 # Preserve the local artifact and mark the job complete rather than prompting
@@ -306,6 +305,11 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
             download_url=f"/api/generated/{job_id}?download=1",
             error=storage_warning
         )
+        if media_uri:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                app.logger.warning("Could not remove local MP4 copy for job %s after durable upload", job_id)
     except subprocess.TimeoutExpired:
         app.logger.exception("Wan generation timed out for job %s", job_id)
         update_video_job(
