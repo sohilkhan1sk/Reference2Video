@@ -22,8 +22,8 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile Python modules
-        run: python -m compileall -q app.py job_store.py media_store.py tests
-      - name: Run storage regression tests
+        run: python -m compileall -q app.py assembly.py job_store.py media_store.py tests
+      - name: Run storage and assembly regression tests
         run: python -m unittest discover -s tests -v
       - name: Check browser JavaScript syntax
         run: node --check static/app.js
