@@ -134,7 +134,7 @@ finally{if(button)button.disabled=false;}
 }
 document.getElementById('loadJobsBtn')?.addEventListener('click',loadRecentJobs);
 async function refreshProviderStatus(){
-const el=document.getElementById('providerStatus'),storageEl=document.getElementById('mediaStorageStatus');
+const el=document.getElementById('providerStatus'),storageEl=document.getElementById('mediaStorageStatus'),assemblyEl=document.getElementById('assemblyStatus');
 if(!el)return;
 try{
 const response=await fetch('/health');
@@ -144,6 +144,13 @@ if(storageEl){
 storageEl.textContent=data.media_storage_configured
 ?'MP4 storage: durable private S3-compatible object storage is configured. New completed clips will be uploaded there; existing local clips stay on the server.'
 :'MP4 storage: temporary local server storage. To retain generated clips across redeploys, configure S3_ENDPOINT_URL (if required), S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY in Render.';
+}
+if(assemblyEl){
+assemblyEl.textContent=data.ffmpeg_available
+?'FFmpeg is available. Select completed clips below to create a silent MP4 without calling the paid video provider.'
+:data.ffmpeg_installable
+?'FFmpeg will be installed from the bundled npm package when the first export starts. Assembly itself does not make a paid AI video request.'
+:'FFmpeg is not installed. Set FFMPEG_PATH or install FFmpeg in the Render build environment before assembling clips.';
 }
 if(!data.paid_generation_enabled){el.textContent='Safety lock active: paid clip generation is disabled by the app owner. No paid API request can run until the owner enables it in Render.';}
 else if(!data.video_access_token_configured){el.textContent='Set VIDEO_GENERATION_ACCESS_TOKEN privately in Render, then enter the same token in the owner access field below.';}
