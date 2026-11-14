@@ -1,5 +1,5 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
-let currentData=null,selectedIdea=0;
+let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={};
 fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
@@ -18,6 +18,7 @@ async function pollVideoJob(jobId,output,button,timer){try{const response=await 
 function renderRecentJobs(jobs,store,mediaBackend,mediaConfigured){
 const box=document.getElementById('recentJobs'),status=document.getElementById('historyStatus');
 if(!box)return;
+recentJobsById={};(jobs||[]).forEach(job=>{recentJobsById[job.job_id]=job;});
 if(status){const dbNote=store==='postgres'?'PostgreSQL keeps job metadata across restarts.':'SQLite metadata may be lost when the Render free instance is replaced.';const mediaNote=mediaConfigured?'Completed MP4 clips are stored in private S3-compatible object storage.':'MP4 clips remain on temporary server storage; configure S3-compatible storage to keep them across redeploys.';status.textContent='Loaded '+jobs.length+' recent jobs. '+dbNote+' '+mediaNote;}
 if(!jobs.length){box.innerHTML='<p class="history-empty">No video-generation jobs have been recorded yet.</p>';return;}
 box.innerHTML=jobs.map(job=>{
@@ -25,7 +26,7 @@ const created=job.created_at?new Date(Number(job.created_at)*1000).toLocaleStrin
 const details=[job.duration?job.duration+' sec':'',job.aspect_ratio||'',job.resolution||'',job.estimated_cost_usd!=null?formatUsd(job.estimated_cost_usd)+' estimated':''].filter(Boolean).join(' · ');
 let output='';
 if(job.status==='COMPLETED'){
-if(job.artifact_available){output='<video controls playsinline preload="metadata" src="'+esc(job.video_url)+'"></video><div class="video-actions"><a href="'+esc(job.download_url)+'">Download MP4 ↓</a></div>';}
+if(job.artifact_available){output='<video controls playsinline preload="metadata" src="'+esc(job.video_url)+'"></video><div class="video-actions"><a href="'+esc(job.download_url)+'">Download MP4 ↓</a><button type="button" class="secondary add-to-assembly" data-job="'+esc(job.job_id)+'">Add to assembly +</button></div>';}
 else{output='<p class="history-missing">Clip metadata is saved, but its MP4 file is no longer on this server. Configure persistent media storage to retain video files across redeploys.</p>';}
 }else if(job.status==='FAILED'){output='<p class="generation-error">'+esc(job.error||job.message||'Generation failed.')+'</p>';}
 else{output='<button type="button" class="secondary resume-history" data-job="'+esc(job.job_id)+'">Resume tracking</button><div class="history-resume-output" id="resume-out-'+esc(job.job_id)+'"></div>';}
@@ -38,7 +39,86 @@ output.innerHTML='<div class="generation-status"><span class="spinner"></span><s
 const started=Date.now();const timer=setInterval(()=>{const clock=output.querySelector('#gen-time');if(clock)clock.textContent=formatElapsed(Date.now()-started);},1000);
 pollVideoJob(jobId,output,button,timer);
 }));
+document.querySelectorAll('.add-to-assembly').forEach(button=>button.addEventListener('click',()=>{
+queueAssemblyClip(button.dataset.job);
+}));
+renderAssemblyQueue();
 }
+function queueAssemblyClip(jobId){
+const job=recentJobsById[jobId];
+const status=document.getElementById('assemblyStatus');
+if(!job||!job.artifact_available){if(status)status.textContent='That clip is not currently available for assembly.';return;}
+if(assemblyQueue.includes(jobId)){if(status)status.textContent='That clip is already in the assembly queue.';return;}
+assemblyQueue.push(jobId);
+renderAssemblyQueue();
+if(status)status.textContent='Added clip to the assembly queue. Click Add to assembly on other clips, then reorder them.';
+}
+function renderAssemblyQueue(){
+const box=document.getElementById('assemblyQueue'),button=document.getElementById('assembleBtn');
+if(!box)return;
+if(!assemblyQueue.length){
+box.innerHTML='<p class="assembly-empty">No clips selected yet. Load history and add completed clips above.</p>';
+if(button)button.disabled=true;
+return;
+}
+box.innerHTML=assemblyQueue.map((jobId,index)=>{
+const job=recentJobsById[jobId]||{};
+const label='Clip '+String(index+1).padStart(2,'0')+' · '+(job.duration||'?')+' sec · '+(job.aspect_ratio||'format unknown');
+return '<div class="assembly-queue-item"><strong>'+esc(label)+'</strong><div class="queue-actions"><button type="button" class="secondary queue-up" data-index="'+index+'" '+(index===0?'disabled':'')+'>↑</button><button type="button" class="secondary queue-down" data-index="'+index+'" '+(index===assemblyQueue.length-1?'disabled':'')+'>↓</button><button type="button" class="secondary queue-remove" data-index="'+index+'">Remove</button></div></div>';
+}).join('');
+box.querySelectorAll('.queue-up').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),-1)));
+box.querySelectorAll('.queue-down').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),1)));
+box.querySelectorAll('.queue-remove').forEach(button=>button.addEventListener('click',()=>{assemblyQueue.splice(Number(button.dataset.index),1);renderAssemblyQueue();}));
+if(button)button.disabled=false;
+}
+function moveAssemblyItem(index,delta){
+const target=index+delta;
+if(target<0||target>=assemblyQueue.length)return;
+[ assemblyQueue[index],assemblyQueue[target] ]=[ assemblyQueue[target],assemblyQueue[index] ];
+renderAssemblyQueue();
+}
+async function createAssembly(){
+const button=document.getElementById('assembleBtn'),output=document.getElementById('assemblyOutput');
+const token=document.getElementById('videoAccessToken')?.value.trim()||'';
+const status=document.getElementById('assemblyStatus');
+if(!token){if(status)status.textContent='Enter the owner access token configured privately in Render first.';return;}
+if(!assemblyQueue.length){if(status)status.textContent='Add at least one completed clip to the assembly queue.';return;}
+const aspect=document.getElementById('assemblyAspect')?.value||'16:9';
+if(!window.confirm('Assemble '+assemblyQueue.length+' existing clips in the displayed order as a '+aspect+' silent MP4? This uses FFmpeg on the server and does not call the paid video-generation provider.'))return;
+button.disabled=true;
+output.innerHTML='<div class="generation-status"><span class="spinner"></span><span>Starting FFmpeg assembly…</span></div>';
+if(status)status.textContent='Creating a silent MP4 export. No paid video-generation request is sent.';
+try{
+const response=await fetch('/api/assemble',{method:'POST',headers:{'Content-Type':'application/json','X-Owner-Token':token},body:JSON.stringify({job_ids:assemblyQueue.slice(),aspect_ratio:aspect})});
+const data=await readJsonResponse(response,'MP4 assembly');
+if(!response.ok)throw Error(data.error||'Could not start assembly (HTTP '+response.status+').');
+await pollAssembly(data.assembly_id,token,button,output);
+}catch(err){
+output.innerHTML='<p class="generation-error">'+esc(err.message)+'</p>';
+button.disabled=false;
+}
+}
+async function pollAssembly(assemblyId,token,button,output){
+try{
+const response=await fetch('/api/assemble/'+encodeURIComponent(assemblyId),{headers:{'X-Owner-Token':token}});
+const data=await readJsonResponse(response,'Assembly status');
+if(!response.ok)throw Error(data.error||'Could not check assembly status (HTTP '+response.status+').');
+if(data.status==='FAILED')throw Error(data.error||'FFmpeg assembly failed.');
+if(data.status==='COMPLETED'){
+output.innerHTML='<video controls playsinline preload="metadata" src="'+esc(data.video_url)+'"></video><div class="video-actions"><a href="'+esc(data.download_url)+'">Download finished MP4 ↓</a><span>'+esc(data.aspect_ratio)+' · '+esc(data.source_count)+' clips · silent export</span></div>'+(data.storage_backend==='s3'?'<p class="assembly-note">Saved in durable private object storage.</p>':'<p class="assembly-note">Saved on temporary server storage. Download it before a Render restart or redeploy.</p>');
+const status=document.getElementById('assemblyStatus');
+if(status)status.textContent='Finished MP4 is ready. The preview/download links are temporary and expire after 15 minutes; reload history and assemble again for fresh links if needed.';
+button.disabled=false;
+return;
+}
+output.innerHTML='<div class="generation-status"><span class="spinner"></span><span>'+esc(data.message||'FFmpeg is processing the clips…')+'</span></div><small>Server-side assembly · no video-generation API charge</small>';
+setTimeout(()=>pollAssembly(assemblyId,token,button,output),3000);
+}catch(err){
+output.innerHTML='<p class="generation-error">'+esc(err.message)+'</p>';
+button.disabled=false;
+}
+}
+document.getElementById('assembleBtn')?.addEventListener('click',createAssembly);
 async function loadRecentJobs(){
 const button=document.getElementById('loadJobsBtn'),status=document.getElementById('historyStatus'),token=document.getElementById('videoAccessToken')?.value.trim()||'';
 if(!token){if(status)status.textContent='Enter the owner access token configured privately in Render, then load history.';return;}
