@@ -4,14 +4,16 @@ from flask import Flask, render_template, request, jsonify, send_file, redirect
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
+from assembly import assemble_clips
 from job_store import (
     init_job_store, create_video_job, update_video_job,
     get_video_job_record, list_video_job_records, mark_stale_video_jobs,
-    job_store_backend,
+    create_assembly_job, update_assembly_job, get_assembly_job_record,
+    mark_stale_assembly_jobs, job_store_backend,
 )
 from media_store import (
     media_storage_configured, media_storage_backend, upload_video_file,
-    object_exists, presigned_video_url,
+    upload_assembly_file, download_video_file, object_exists, presigned_video_url,
 )
 
 load_dotenv()
@@ -25,10 +27,13 @@ def request_too_large(_error):
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
 GENERATED_DIR = ROOT / "generated"
+ASSEMBLY_DIR = GENERATED_DIR / "assemblies"
 UPLOAD_DIR.mkdir(exist_ok=True)
 GENERATED_DIR.mkdir(exist_ok=True)
+ASSEMBLY_DIR.mkdir(parents=True, exist_ok=True)
 init_job_store()
 mark_stale_video_jobs()
+mark_stale_assembly_jobs()
 ALLOWED = {"mp4", "mov", "webm", "mkv", "avi"}
 
 VIDEO_PROVIDER = "Vercel AI Gateway / Alibaba Cloud"
@@ -43,6 +48,13 @@ def paid_generation_enabled():
 
 def video_access_token_configured():
     return bool(os.getenv("VIDEO_GENERATION_ACCESS_TOKEN", "").strip())
+
+
+def owner_token_matches(supplied):
+    expected = os.getenv("VIDEO_GENERATION_ACCESS_TOKEN", "").strip()
+    return bool(expected) and hmac.compare_digest(
+        str(supplied or "").strip(), expected
+    )
 
 
 def estimate_video_cost(duration, resolution):
@@ -244,6 +256,154 @@ def ensure_video_sdk():
             details = (completed.stderr or completed.stdout or "npm install did not create node_modules/ai.")[-1800:]
             raise RuntimeError("Could not prepare the video-generation SDK. Check the Render build environment. Details: " + details)
         _video_sdk_ready = True
+
+
+def available_ffmpeg_binary():
+    configured = os.getenv("FFMPEG_PATH", "").strip()
+    if configured and Path(configured).is_file():
+        return configured
+    bundled = ROOT / "node_modules" / "ffmpeg-static" / "ffmpeg"
+    if bundled.is_file():
+        return str(bundled)
+    return shutil.which("ffmpeg")
+
+
+def ensure_ffmpeg():
+    """Find FFmpeg or install the pinned ffmpeg-static npm dependency once."""
+    existing = available_ffmpeg_binary()
+    if existing:
+        return existing
+    if not shutil.which("node"):
+        raise RuntimeError("FFmpeg is not installed and Node.js is unavailable to install the bundled binary.")
+    if not shutil.which("npm"):
+        raise RuntimeError("FFmpeg is not installed and npm is unavailable. Set FFMPEG_PATH or install FFmpeg in the Render build.")
+    bundled = ROOT / "node_modules" / "ffmpeg-static" / "ffmpeg"
+    with video_sdk_install_lock:
+        existing = available_ffmpeg_binary()
+        if existing:
+            return existing
+        try:
+            completed = subprocess.run(
+                ["npm", "install", "--omit=dev", "--no-audit", "--no-fund"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=360,
+                env=os.environ.copy()
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Installing the bundled FFmpeg binary timed out. Set FFMPEG_PATH or retry after the service is stable.") from exc
+        existing = available_ffmpeg_binary()
+        if completed.returncode != 0 or not existing:
+            details = (completed.stderr or completed.stdout or
+                       "npm install did not provide node_modules/ffmpeg-static/ffmpeg.")[-1800:]
+            raise RuntimeError("Could not prepare FFmpeg for assembly. Details: " + details)
+        return existing
+
+
+def _valid_media_id(value):
+    return (
+        isinstance(value, str) and len(value) == 32
+        and all(char in "0123456789abcdef" for char in value.lower())
+    )
+
+
+def _assembly_signature(assembly_id, expires, download):
+    secret = os.getenv("VIDEO_GENERATION_ACCESS_TOKEN", "").strip()
+    message = f"{assembly_id}:{expires}:{1 if download else 0}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), message, "sha256").hexdigest()
+
+
+def _assembly_file_url(assembly_id, download=False):
+    expires = int(time.time()) + 900
+    signature = _assembly_signature(assembly_id, expires, download)
+    return (
+        f"/api/assemblies/{assembly_id}/file?expires={expires}"
+        f"&download={1 if download else 0}&signature={signature}"
+    )
+
+
+def run_assembly_job(assembly_id, source_job_ids, aspect_ratio):
+    work_dir = GENERATED_DIR / "assembly_work" / assembly_id
+    output_path = ASSEMBLY_DIR / f"{assembly_id}.mp4"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        update_assembly_job(
+            assembly_id, message="Checking FFmpeg and collecting completed scene clips…"
+        )
+        ffmpeg_path = ensure_ffmpeg()
+        source_paths = []
+        for index, source_job_id in enumerate(source_job_ids, start=1):
+            source_job = get_video_job_record(source_job_id)
+            if not source_job or source_job.get("status") != "COMPLETED":
+                raise RuntimeError(
+                    f"Scene clip {index} is no longer marked completed. Reload history and try again."
+                )
+            local_path = GENERATED_DIR / f"{source_job_id}.mp4"
+            stored_uri = source_job.get("video_url") or ""
+            if local_path.is_file() and local_path.stat().st_size > 0:
+                source_path = local_path
+            elif str(stored_uri).startswith("s3://"):
+                source_path = work_dir / f"source-{index:03d}.mp4"
+                download_video_file(stored_uri, source_path)
+            else:
+                raise RuntimeError(
+                    f"Scene clip {index} is missing from temporary storage. Configure S3-compatible storage and regenerate that clip."
+                )
+            source_paths.append(source_path)
+            update_assembly_job(
+                assembly_id,
+                message=f"Collected scene clip {index} of {len(source_job_ids)}…"
+            )
+
+        update_assembly_job(
+            assembly_id, message="Normalizing clips to the selected 720p canvas…"
+        )
+        assemble_clips(
+            source_paths, output_path, aspect_ratio, ffmpeg_path,
+            work_dir / "ffmpeg",
+            progress_callback=lambda message: update_assembly_job(
+                assembly_id, message=message
+            ),
+        )
+        if not output_path.is_file() or output_path.stat().st_size < 1024:
+            raise RuntimeError("FFmpeg produced an empty or invalid MP4 export.")
+
+        output_uri = None
+        storage_warning = None
+        if media_storage_configured():
+            update_assembly_job(
+                assembly_id, message="Uploading the finished MP4 to private object storage…"
+            )
+            try:
+                output_uri = upload_assembly_file(output_path, assembly_id)
+            except Exception as storage_error:
+                storage_warning = str(storage_error)[:1200]
+                app.logger.exception(
+                    "Durable export upload failed for assembly %s", assembly_id
+                )
+
+        if output_uri:
+            message = "Finished MP4 ready — saved in durable private object storage."
+        elif storage_warning:
+            message = "Finished MP4 ready, but durable upload failed. Download it before a server restart or redeploy."
+        else:
+            message = "Finished MP4 ready in temporary server storage. Configure S3-compatible storage to retain it across redeploys."
+
+        update_assembly_job(
+            assembly_id, status="COMPLETED", message=message,
+            output_uri=output_uri, error=storage_warning
+        )
+        if output_uri:
+            output_path.unlink(missing_ok=True)
+    except Exception as exc:
+        app.logger.exception("Assembly job %s failed", assembly_id)
+        try:
+            update_assembly_job(
+                assembly_id, status="FAILED", message="MP4 assembly failed",
+                error=str(exc)[:2500]
+            )
+        except Exception:
+            app.logger.exception("Could not persist assembly failure for %s", assembly_id)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
@@ -461,6 +621,130 @@ def list_recent_video_jobs():
         media_storage_configured=media_storage_configured(),
     ), 200
 
+@app.post("/api/assemble")
+def create_assembly():
+    if not owner_token_matches(request.headers.get("X-Owner-Token", "")):
+        return jsonify(error="Owner access token is missing or invalid."), 403
+    data = request.get_json(silent=True) or {}
+    source_job_ids = data.get("job_ids")
+    if not isinstance(source_job_ids, list) or not source_job_ids:
+        return jsonify(error="Choose at least one completed scene clip from history."), 400
+    if len(source_job_ids) > 30:
+        return jsonify(error="An export can contain at most 30 scene clips."), 400
+    if any(not _valid_media_id(job_id) for job_id in source_job_ids):
+        return jsonify(error="One or more selected scene job IDs are invalid."), 400
+    if len(set(source_job_ids)) != len(source_job_ids):
+        return jsonify(error="The same scene clip cannot be added more than once."), 400
+    aspect_ratio = str(data.get("aspect_ratio", "16:9"))
+    if aspect_ratio not in {"16:9", "9:16"}:
+        return jsonify(error="Choose 16:9 landscape or 9:16 vertical export."), 400
+
+    for index, source_job_id in enumerate(source_job_ids, start=1):
+        source_job = get_video_job_record(source_job_id)
+        if not source_job or source_job.get("status") != "COMPLETED":
+            return jsonify(error=f"Selected clip {index} is not a completed generation job."), 409
+        local_path = GENERATED_DIR / f"{source_job_id}.mp4"
+        stored_uri = source_job.get("video_url") or ""
+        if local_path.is_file() and local_path.stat().st_size > 0:
+            continue
+        if str(stored_uri).startswith("s3://"):
+            try:
+                if object_exists(stored_uri):
+                    continue
+            except Exception:
+                app.logger.exception("Could not verify source clip %s", source_job_id)
+        return jsonify(error=f"Selected clip {index} is not available. Reload history or regenerate the missing clip."), 409
+
+    assembly_id = uuid.uuid4().hex
+    create_assembly_job(
+        assembly_id,
+        status="PROCESSING",
+        message="Preparing your silent MP4 export…",
+        created_at=time.time(),
+        aspect_ratio=aspect_ratio,
+        source_job_ids=json.dumps(source_job_ids),
+    )
+    try:
+        thread = threading.Thread(
+            target=run_assembly_job,
+            args=(assembly_id, source_job_ids, aspect_ratio),
+            daemon=True,
+        )
+        thread.start()
+    except Exception as exc:
+        update_assembly_job(
+            assembly_id, status="FAILED", message="Could not start MP4 assembly",
+            error=str(exc)[:1200]
+        )
+        return jsonify(error="Could not start the assembly worker. Please retry."), 500
+    return jsonify(
+        assembly_id=assembly_id, status="PROCESSING",
+        aspect_ratio=aspect_ratio, source_count=len(source_job_ids),
+        provider="FFmpeg (local server processing)", estimated_cost_usd=0
+    ), 202
+
+
+@app.get("/api/assemble/<assembly_id>")
+def get_assembly_status(assembly_id):
+    if not owner_token_matches(request.headers.get("X-Owner-Token", "")):
+        return jsonify(error="Owner access token is missing or invalid."), 403
+    if not _valid_media_id(assembly_id):
+        return jsonify(error="Invalid assembly ID."), 400
+    mark_stale_assembly_jobs()
+    job = get_assembly_job_record(assembly_id)
+    if not job:
+        return jsonify(error="Assembly job not found."), 404
+    completed = job.get("status") == "COMPLETED"
+    source_ids = json.loads(job.get("source_job_ids") or "[]")
+    return jsonify(
+        assembly_id=assembly_id,
+        status=job.get("status"),
+        message=job.get("message"),
+        error=job.get("error"),
+        aspect_ratio=job.get("aspect_ratio"),
+        source_count=len(source_ids),
+        video_url=_assembly_file_url(assembly_id, False) if completed else None,
+        download_url=_assembly_file_url(assembly_id, True) if completed else None,
+        storage_backend="s3" if str(job.get("output_uri") or "").startswith("s3://") else "local",
+    ), 200
+
+
+@app.get("/api/assemblies/<assembly_id>/file")
+def serve_assembly_file(assembly_id):
+    if not _valid_media_id(assembly_id):
+        return jsonify(error="Invalid assembly ID."), 400
+    try:
+        expires = int(request.args.get("expires", "0"))
+    except ValueError:
+        return jsonify(error="Invalid or expired export link."), 403
+    download = request.args.get("download") == "1"
+    supplied_signature = request.args.get("signature", "")
+    if expires < int(time.time()) or expires > int(time.time()) + 900:
+        return jsonify(error="This export link has expired. Reload the assembly status to create a fresh link."), 403
+    expected_signature = _assembly_signature(assembly_id, expires, download)
+    if not supplied_signature or not hmac.compare_digest(supplied_signature, expected_signature):
+        return jsonify(error="Invalid export link."), 403
+    job = get_assembly_job_record(assembly_id)
+    if not job or job.get("status") != "COMPLETED":
+        return jsonify(error="This finished export is not available."), 404
+    stored_uri = job.get("output_uri") or ""
+    if str(stored_uri).startswith("s3://"):
+        try:
+            return redirect(
+                presigned_video_url(stored_uri, download=download), code=302
+            )
+        except Exception:
+            app.logger.exception("Could not sign stored assembly %s", assembly_id)
+            return jsonify(error="The stored export could not be accessed. Check object-storage permissions."), 503
+    path = ASSEMBLY_DIR / f"{assembly_id}.mp4"
+    if not path.is_file():
+        return jsonify(error="The export is no longer on this server. Configure durable media storage before creating more exports."), 404
+    return send_file(
+        path, mimetype="video/mp4", as_attachment=download,
+        download_name=f"reference2video-export-{assembly_id[:8]}.mp4"
+    )
+
+
 @app.get("/api/generated/<job_id>")
 def serve_generated_video(job_id):
     job = get_video_job_record(job_id)
@@ -498,6 +782,8 @@ def health():
         video_generation_ready=paid_generation_enabled() and video_access_token_configured() and bool(os.getenv("AI_GATEWAY_API_KEY", "").strip()),
         node_available=bool(shutil.which("node")),
         video_sdk_installed=(ROOT / "node_modules" / "ai" / "package.json").exists(),
+        ffmpeg_available=bool(available_ffmpeg_binary()),
+        ffmpeg_installable=bool(shutil.which("node") and shutil.which("npm")),
         job_store_backend=job_store_backend(),
         media_storage_backend=media_storage_backend(),
         media_storage_configured=media_storage_configured(),
