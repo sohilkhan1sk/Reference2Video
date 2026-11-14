@@ -307,6 +307,8 @@ def _valid_media_id(value):
 
 def _assembly_signature(assembly_id, expires, download):
     secret = os.getenv("VIDEO_GENERATION_ACCESS_TOKEN", "").strip()
+    if not secret:
+        raise RuntimeError("VIDEO_GENERATION_ACCESS_TOKEN is not configured.")
     message = f"{assembly_id}:{expires}:{1 if download else 0}".encode("utf-8")
     return hmac.new(secret.encode("utf-8"), message, "sha256").hexdigest()
 
@@ -721,6 +723,8 @@ def serve_assembly_file(assembly_id):
     supplied_signature = request.args.get("signature", "")
     if expires < int(time.time()) or expires > int(time.time()) + 900:
         return jsonify(error="This export link has expired. Reload the assembly status to create a fresh link."), 403
+    if not video_access_token_configured():
+        return jsonify(error="Export links are disabled because the owner access token is not configured."), 503
     expected_signature = _assembly_signature(assembly_id, expires, download)
     if not supplied_signature or not hmac.compare_digest(supplied_signature, expected_signature):
         return jsonify(error="Invalid export link."), 403
