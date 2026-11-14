@@ -102,6 +102,23 @@ def init_job_store():
             CREATE INDEX IF NOT EXISTS idx_video_jobs_created_at
             ON video_jobs (created_at)
         """)
+        _execute(conn, """
+            CREATE TABLE IF NOT EXISTS assembly_jobs (
+                assembly_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at DOUBLE PRECISION NOT NULL,
+                updated_at DOUBLE PRECISION NOT NULL,
+                aspect_ratio TEXT NOT NULL,
+                source_job_ids TEXT NOT NULL,
+                output_uri TEXT,
+                error TEXT
+            )
+        """)
+        _execute(conn, """
+            CREATE INDEX IF NOT EXISTS idx_assembly_jobs_created_at
+            ON assembly_jobs (created_at)
+        """)
 
 
 def create_video_job(job_id, **fields):
@@ -172,6 +189,88 @@ def mark_stale_video_jobs(stale_after_seconds=1200):
             """UPDATE video_jobs
                SET status = 'FAILED',
                    message = 'Generation interrupted',
+                   error = ?,
+                   updated_at = ?
+               WHERE status = 'PROCESSING' AND updated_at < ?""",
+            (message, time.time(), cutoff),
+        )
+        return cursor.rowcount
+
+
+_ASSEMBLY_FIELDS = {
+    "status", "message", "created_at", "updated_at", "aspect_ratio",
+    "source_job_ids", "output_uri", "error",
+}
+
+
+def create_assembly_job(assembly_id, **fields):
+    now = time.time()
+    record = {"assembly_id": assembly_id, **fields}
+    record.setdefault("updated_at", now)
+    record.setdefault("created_at", now)
+    record.setdefault("status", "PROCESSING")
+    record.setdefault("message", "Preparing the video export…")
+    unknown = set(record) - (_ASSEMBLY_FIELDS | {"assembly_id"})
+    if unknown:
+        raise ValueError("Unsupported assembly job fields: " + ", ".join(sorted(unknown)))
+    columns = list(record)
+    placeholders = ", ".join(["?"] * len(columns))
+    sql = (
+        "INSERT INTO assembly_jobs (" + ", ".join(columns) + ") VALUES ("
+        + placeholders + ")"
+    )
+    with _connection() as conn:
+        _execute(conn, sql, tuple(record[column] for column in columns))
+
+
+def update_assembly_job(assembly_id, **fields):
+    if not fields:
+        return
+    unknown = set(fields) - _ASSEMBLY_FIELDS
+    if unknown:
+        raise ValueError("Unsupported assembly job fields: " + ", ".join(sorted(unknown)))
+    fields["updated_at"] = time.time()
+    assignments = ", ".join(f"{column} = ?" for column in fields)
+    params = tuple(fields.values()) + (assembly_id,)
+    with _connection() as conn:
+        cursor = _execute(
+            conn,
+            f"UPDATE assembly_jobs SET {assignments} WHERE assembly_id = ?",
+            params,
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(f"Assembly job not found: {assembly_id}")
+
+
+def get_assembly_job_record(assembly_id):
+    with _connection() as conn:
+        row = _execute(
+            conn, "SELECT * FROM assembly_jobs WHERE assembly_id = ?", (assembly_id,)
+        ).fetchone()
+    return _as_dict(row)
+
+
+def list_assembly_job_records(limit=20):
+    limit = max(1, min(int(limit), 50))
+    with _connection() as conn:
+        rows = _execute(
+            conn,
+            "SELECT * FROM assembly_jobs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [_as_dict(row) for row in rows]
+
+
+def mark_stale_assembly_jobs(stale_after_seconds=1800):
+    """Fail exports abandoned by a restart after 30 minutes."""
+    cutoff = time.time() - max(60, int(stale_after_seconds))
+    message = "The assembly worker stopped before the export finished. Start a new export."
+    with _connection() as conn:
+        cursor = _execute(
+            conn,
+            """UPDATE assembly_jobs
+               SET status = 'FAILED',
+                   message = 'Export interrupted',
                    error = ?,
                    updated_at = ?
                WHERE status = 'PROCESSING' AND updated_at < ?""",
