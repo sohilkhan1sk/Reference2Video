@@ -41,6 +41,10 @@ class FakeS3Client:
             })
         return {"ContentLength": len(self.objects[(Bucket, Key)]["body"])}
 
+    def download_file(self, Bucket, Key, Filename):
+        item = self.objects[(Bucket, Key)]
+        Path(Filename).write_bytes(item["body"])
+
     def generate_presigned_url(self, operation, Params, ExpiresIn):
         self.last_presign = (operation, Params, ExpiresIn)
         return "https://private.example/signed-video"
@@ -98,6 +102,27 @@ class MediaStoreTests(unittest.TestCase):
         self.assertEqual(params["ResponseContentType"], "video/mp4")
         self.assertTrue(params["ResponseContentDisposition"].startswith("inline;"))
         self.assertEqual(expires, 900)
+
+    def test_upload_assembly_export_uses_private_exports_prefix(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "final.mp4"
+            path.write_bytes(b"assembled-mp4-data")
+            uri = media_store.upload_assembly_file(path, "assembly-123")
+            self.assertEqual(
+                uri,
+                "s3://private-r2-bucket/reference2video/exports/assembly-123.mp4",
+            )
+            self.assertTrue(media_store.object_exists(uri))
+
+    def test_download_private_clip_to_local_temp_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "clip.mp4"
+            path.write_bytes(b"source-mp4-data")
+            uri = media_store.upload_video_file(path, "source-123")
+            destination = Path(folder) / "work" / "downloaded.mp4"
+            result = media_store.download_video_file(uri, destination)
+            self.assertEqual(result, destination)
+            self.assertEqual(destination.read_bytes(), b"source-mp4-data")
 
     def test_missing_object_returns_false(self):
         self.assertFalse(media_store.object_exists(
