@@ -57,12 +57,14 @@ def _client():
     )
 
 
-def _key_for_job(job_id):
+def _key_for_job(job_id, folder="clips"):
     _values, _endpoint, _region, prefix = _settings()
     safe_id = "".join(ch for ch in str(job_id) if ch.isalnum() or ch in "-_")
     if not safe_id or safe_id != str(job_id):
-        raise ValueError("Invalid video job ID for object storage.")
-    return f"{prefix}/clips/{safe_id}.mp4"
+        raise ValueError("Invalid media job ID for object storage.")
+    if folder not in {"clips", "exports"}:
+        raise ValueError("Invalid media folder.")
+    return f"{prefix}/{folder}/{safe_id}.mp4"
 
 
 def upload_video_file(path, job_id):
@@ -83,16 +85,45 @@ def upload_video_file(path, job_id):
     return f"s3://{values['S3_BUCKET']}/{key}"
 
 
+def upload_assembly_file(path, assembly_id):
+    """Upload a finished project MP4 under the private exports/ prefix."""
+    values, _endpoint, _region, _prefix = _settings()
+    key = _key_for_job(assembly_id, folder="exports")
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Finished assembly does not exist: {file_path}")
+    with file_path.open("rb") as stream:
+        _client().put_object(
+            Bucket=values["S3_BUCKET"],
+            Key=key,
+            Body=stream,
+            ContentType="video/mp4",
+            ContentDisposition=f'inline; filename="reference2video-export-{assembly_id}.mp4"',
+        )
+    return f"s3://{values['S3_BUCKET']}/{key}"
+
+
 def _bucket_and_key(storage_uri):
     values, _endpoint, _region, prefix = _settings()
     parsed = urlsplit(str(storage_uri or ""))
     key = parsed.path.lstrip("/")
-    allowed_prefix = f"{prefix}/clips/"
+    allowed_prefixes = (f"{prefix}/clips/", f"{prefix}/exports/")
     if parsed.scheme != "s3" or parsed.netloc != values["S3_BUCKET"]:
         raise ValueError("The stored media reference does not match the configured bucket.")
-    if not key.startswith(allowed_prefix) or ".." in key.split("/"):
-        raise ValueError("The stored media reference is outside the configured clips folder.")
+    if not key.startswith(allowed_prefixes) or ".." in key.split("/"):
+        raise ValueError("The stored media reference is outside the configured media folders.")
     return values["S3_BUCKET"], key
+
+
+def download_video_file(storage_uri, destination):
+    """Download a private clip/export to a temporary local file."""
+    bucket, key = _bucket_and_key(storage_uri)
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _client().download_file(bucket, key, str(target))
+    if not target.is_file() or target.stat().st_size == 0:
+        raise RuntimeError("Object storage returned an empty MP4 file.")
+    return target
 
 
 def object_exists(storage_uri):
