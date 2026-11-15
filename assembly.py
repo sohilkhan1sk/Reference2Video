@@ -1,8 +1,4 @@
-"""FFmpeg assembly helpers for concatenating completed scene clips.
-
-The first export pass deliberately uses hard cuts, a 30 fps H.264 video stream,
-and no audio. Voiceover/music mixing is a separate, later pipeline stage.
-"""
+""""FFmpeg assembly helpers for scene clips with optional narration and music."""
 import subprocess
 from pathlib import Path
 
@@ -21,8 +17,6 @@ def output_size(aspect_ratio):
 
 def video_filter(aspect_ratio):
     width, height = output_size(aspect_ratio)
-    # Fit the complete source frame inside the target canvas. Padding avoids
-    # unexpectedly cropping faces or text when mixed-aspect clips are assembled.
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
@@ -45,8 +39,7 @@ def build_normalize_command(ffmpeg, input_path, output_path, aspect_ratio):
 
 
 def _concat_entry(path):
-    # The concat demuxer uses single-quoted paths with backslash escaping.
-    normalized = str(Path(path).resolve()).replace("\\", "/")
+    normalized = str(Path(path).resolve()).replace("\\\\", "/")
     escaped = normalized.replace("'", "'\\''")
     return "file '" + escaped + "'"
 
@@ -58,6 +51,66 @@ def build_concat_command(ffmpeg, concat_list, output_path):
         "-map", "0:v:0", "-an", "-c:v", "copy",
         "-movflags", "+faststart", str(output_path),
     ]
+
+
+def _gain_text(value, maximum, label):
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} gain must be a number.") from exc
+    if not 0 <= number <= maximum:
+        raise ValueError(f"{label} gain must be between 0 and {maximum}.")
+    return f"{number:.3f}".rstrip("0").rstrip(".") or "0"
+
+
+def build_audio_mux_command(ffmpeg, silent_video, output_path,
+                            voiceover_path=None, music_path=None,
+                            voiceover_gain=1.0, music_gain=0.18):
+    """Mux optional narration and looping music; duck music under narration."""
+    if not voiceover_path and not music_path:
+        raise ValueError("At least one audio track is required.")
+    if voiceover_path and (not Path(voiceover_path).is_file() or Path(voiceover_path).stat().st_size == 0):
+        raise FileNotFoundError("The voiceover audio file is missing or empty.")
+    if music_path and (not Path(music_path).is_file() or Path(music_path).stat().st_size == 0):
+        raise FileNotFoundError("The background music file is missing or empty.")
+
+    voice_gain = _gain_text(voiceover_gain, 2.0, "Voiceover")
+    music_level = _gain_text(music_gain, 1.0, "Music")
+    command = [
+        str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(silent_video),
+    ]
+    if voiceover_path:
+        command.extend(["-i", str(voiceover_path)])
+    if music_path:
+        command.extend(["-stream_loop", "-1", "-i", str(music_path)])
+
+    if voiceover_path and music_path:
+        graph = (
+            f"[1:a]aresample=48000,volume={voice_gain},apad[voice];"
+            f"[2:a]aresample=48000,volume={music_level}[music];"
+            "[music][voice]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];"
+            "[voice][ducked]amix=inputs=2:duration=longest:dropout_transition=2,"
+            "alimiter=limit=0.95[aout]"
+        )
+    elif voiceover_path:
+        graph = (
+            f"[1:a]aresample=48000,volume={voice_gain},apad,"
+            "alimiter=limit=0.95[aout]"
+        )
+    else:
+        graph = (
+            f"[1:a]aresample=48000,volume={music_level},"
+            "alimiter=limit=0.95[aout]"
+        )
+
+    command.extend([
+        "-filter_complex", graph,
+        "-map", "0:v:0", "-map", "[aout]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-shortest", "-movflags", "+faststart", str(output_path),
+    ])
+    return command
 
 
 def _run(command, timeout, runner):
@@ -72,8 +125,10 @@ def _run(command, timeout, runner):
 
 
 def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
-                   work_dir, progress_callback=None, runner=subprocess.run):
-    """Normalize completed clips, then concatenate them in the supplied order."""
+                   work_dir, progress_callback=None, runner=subprocess.run,
+                   voiceover_path=None, music_path=None,
+                   voiceover_gain=1.0, music_gain=0.18):
+    """Normalize and join clips, then optionally mix narration and background music."""
     sources = [Path(path) for path in source_paths]
     if not sources:
         raise ValueError("Choose at least one completed scene clip.")
@@ -83,6 +138,13 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
     for source in sources:
         if not source.is_file() or source.stat().st_size == 0:
             raise FileNotFoundError("A selected scene clip is missing or empty.")
+    for label, audio_path in (("Voiceover", voiceover_path), ("Background music", music_path)):
+        if audio_path and (not Path(audio_path).is_file() or Path(audio_path).stat().st_size == 0):
+            raise FileNotFoundError(f"{label} file is missing or empty.")
+    if voiceover_path:
+        _gain_text(voiceover_gain, 2.0, "Voiceover")
+    if music_path:
+        _gain_text(music_gain, 1.0, "Music")
 
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -94,10 +156,11 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
         normalized = work / f"normalized-{index:03d}.mp4"
         if progress_callback:
             progress_callback(f"Preparing clip {index} of {len(sources)}…")
-        command = build_normalize_command(
-            ffmpeg_path, source, normalized, aspect_ratio
+        _run(
+            build_normalize_command(ffmpeg_path, source, normalized, aspect_ratio),
+            timeout=300,
+            runner=runner,
         )
-        _run(command, timeout=300, runner=runner)
         if not normalized.is_file() or normalized.stat().st_size == 0:
             raise RuntimeError(f"FFmpeg produced no normalized output for clip {index}.")
         normalized_paths.append(normalized)
@@ -107,13 +170,31 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
         "\n".join(_concat_entry(path) for path in normalized_paths) + "\n",
         encoding="utf-8",
     )
+    has_audio = bool(voiceover_path or music_path)
+    joined_video = work / "joined-silent.mp4" if has_audio else destination
     if progress_callback:
-        progress_callback("Joining the normalized clips into one MP4…")
+        progress_callback("Joining the normalized clips into one video…")
     _run(
-        build_concat_command(ffmpeg_path, concat_list, destination),
+        build_concat_command(ffmpeg_path, concat_list, joined_video),
         timeout=600,
         runner=runner,
     )
+    if not joined_video.is_file() or joined_video.stat().st_size == 0:
+        raise RuntimeError("FFmpeg did not produce the joined video.")
+
+    if has_audio:
+        if progress_callback:
+            progress_callback("Mixing voiceover and background music…")
+        _run(
+            build_audio_mux_command(
+                ffmpeg_path, joined_video, destination,
+                voiceover_path=voiceover_path, music_path=music_path,
+                voiceover_gain=voiceover_gain, music_gain=music_gain,
+            ),
+            timeout=600,
+            runner=runner,
+        )
     if not destination.is_file() or destination.stat().st_size == 0:
         raise RuntimeError("FFmpeg did not produce a finished MP4 export.")
     return destination
+"
