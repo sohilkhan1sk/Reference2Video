@@ -1,4 +1,4 @@
-""""FFmpeg assembly helpers for scene clips with optional narration and music."""
+"""FFmpeg assembly helpers for scene clips with optional narration and music."""
 import subprocess
 from pathlib import Path
 
@@ -39,7 +39,7 @@ def build_normalize_command(ffmpeg, input_path, output_path, aspect_ratio):
 
 
 def _concat_entry(path):
-    normalized = str(Path(path).resolve()).replace("\\\\", "/")
+    normalized = str(Path(path).resolve()).replace("\\", "/")
     escaped = normalized.replace("'", "'\\''")
     return "file '" + escaped + "'"
 
