@@ -9,6 +9,7 @@ from assembly import (
     build_normalize_command,
     output_size,
     video_filter,
+    build_audio_mux_command,
 )
 
 
@@ -62,6 +63,66 @@ class AssemblyTests(unittest.TestCase):
             self.assertEqual(len(entries), 2)
             self.assertIn("normalized-001.mp4", entries[0])
             self.assertIn("normalized-002.mp4", entries[1])
+            self.assertTrue(output.is_file())
+
+    def test_audio_mux_mixes_voiceover_and_loops_music_with_ducking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            voice = root / "voice.mp3"
+            music = root / "music.mp3"
+            voice.write_bytes(b"voice")
+            music.write_bytes(b"music")
+            command = build_audio_mux_command(
+                "ffmpeg", "joined.mp4", "final.mp4", voice, music,
+                voiceover_gain=1.2, music_gain=0.2,
+            )
+            self.assertIn("-stream_loop", command)
+            self.assertIn("sidechaincompress", command[command.index("-filter_complex") + 1])
+            self.assertIn("amix=inputs=2", command[command.index("-filter_complex") + 1])
+            self.assertIn("-shortest", command)
+            self.assertIn("aac", command)
+
+    def test_audio_mux_supports_voiceover_only_and_rejects_invalid_gain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            voice = Path(tmp) / "voice.wav"
+            voice.write_bytes(b"voice")
+            command = build_audio_mux_command(
+                "ffmpeg", "joined.mp4", "final.mp4", voiceover_path=voice
+            )
+            graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("apad", graph)
+            self.assertNotIn("sidechaincompress", graph)
+            with self.assertRaises(ValueError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4", voiceover_path=voice,
+                    voiceover_gain=2.1,
+                )
+
+    def test_assemble_clips_runs_audio_mux_after_video_concat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "scene.mp4"
+            voice = root / "voice.wav"
+            music = root / "music.mp3"
+            source.write_bytes(b"scene")
+            voice.write_bytes(b"voice")
+            music.write_bytes(b"music")
+            output = root / "exports" / "final.mp4"
+            calls = []
+
+            def fake_runner(command, **kwargs):
+                calls.append(command)
+                Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+                Path(command[-1]).write_bytes(b"fake-output")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            assemble_clips(
+                [source], output, "16:9", "ffmpeg", root / "work",
+                runner=fake_runner, voiceover_path=voice, music_path=music,
+            )
+            self.assertEqual(len(calls), 3)
+            self.assertIn("-filter_complex", calls[-1])
+            self.assertEqual(calls[-1][-1], str(output))
             self.assertTrue(output.is_file())
 
     def test_empty_or_missing_source_is_rejected(self):
