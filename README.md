@@ -9,7 +9,7 @@ Reference2Video is a browser-based Flask app for reference-video analysis, three
 3. Review three original concepts and choose one.
 4. Edit every scene prompt manually and export the storyboard JSON.
 5. Optionally generate individual scene clips with Wan v3.0. Every clip requires a per-scene checkbox and browser confirmation. The server also has an owner-controlled safety switch; paid generation is disabled unless explicitly enabled in Render.
-6. Load completed clips from history, arrange them in storyboard order, and export a silent 9:16 or 16:9 MP4 with FFmpeg.
+6. Load completed clips from history, arrange them in storyboard order, optionally upload narration and background music, and export a 9:16 or 16:9 MP4 with FFmpeg.
 
 ## Video provider, model and cost
 
@@ -69,7 +69,7 @@ Never commit API keys or send them in chat.
 - Per-scene approval checkbox, confirmation prompt and approximate cost estimate.
 - Background clip-generation jobs, in-page MP4 preview and download.
 - Owner-only recent generation history, persisted job status and resume-tracking controls.
-- Select completed clips from history, reorder them, and assemble a silent multi-scene MP4 in 9:16 or 16:9.
+- Select completed clips from history, reorder them, and assemble a multi-scene MP4 in 9:16 or 16:9 with optional narration and background music.
 - Assembly jobs are stored in the same SQLite/PostgreSQL database as clip-generation jobs.
 - 9:16 and 16:9 final export options (scene-generation controls also support square clips).
 
@@ -87,9 +87,10 @@ The **Load history** panel is protected by the same `VIDEO_GENERATION_ACCESS_TOK
 The owner can load recent generation history, add available completed clips to an assembly queue, reorder the queue with the up/down controls, and select a final 16:9 or 9:16 canvas. The server checks that every selected clip is completed and still available before starting the job.
 
 - Assembly is a server-side FFmpeg operation; it does not call Wan, Gemini, or the AI Gateway and does not create a video-provider generation charge.
-- The current export preset is H.264 MP4, 30 fps, 720p (1280×720 landscape or 720×1280 portrait), hard cuts, and fast-start metadata.
+- The export preset is H.264 MP4, 30 fps, 720p (1280×720 landscape or 720×1280 portrait), hard cuts, and fast-start metadata.
 - Each clip is normalized to the same output canvas. The full source frame is preserved; mismatched aspect ratios are padded with black rather than aggressively cropped.
-- This first pass intentionally removes all source audio. Voiceover, music, sound effects, transitions and subtitles are not part of this increment.
+- Optional user-supplied narration and background music can be mixed into the final export. Voiceover is padded to the video length; background music loops to the end and is automatically ducked under narration. The final audio is AAC at 48 kHz / 192 kbps.
+- Audio files are uploaded with the assembly request, limited to 20 MB per track and the existing 50 MB total request limit. Supported extensions: MP3, WAV, M4A, AAC, OGG, FLAC, OPUS and AIFF. Voiceover and music both start at 00:00; there is no timeline positioning, trimming UI, TTS, generated music, timed SFX editor, transitions or subtitles yet. Uploads live in the temporary assembly workspace and are deleted when that worker finishes.
 - Up to 30 completed scene clips can be included in one export. FFmpeg uses CPU, memory, temporary disk space and may take several minutes on a free web instance.
 
 The app uses the ffmpeg-static npm package as a portable Linux binary. It attempts to install the package lazily when the first assembly is requested if FFmpeg is not already available. Node.js and npm must be present for that fallback. To avoid a first-use install, use the recommended Render build command above. For a local installation, either install FFmpeg on the system or set FFMPEG_PATH to its executable path. The /health endpoint reports whether FFmpeg is already available and whether Node/npm can install it.
@@ -97,7 +98,7 @@ The app uses the ffmpeg-static npm package as a portable Linux binary. It attemp
 Completed exports are stored under the private S3-compatible exports/ prefix when object storage is configured. Otherwise, they remain in the temporary Render filesystem and should be downloaded before a restart or redeploy. Assembly playback/download links are signed and expire after 15 minutes.
 
 API:
-- POST /api/assemble — owner-token protected; accepts ordered job_ids and aspect_ratio.
+- POST /api/assemble — owner-token protected; accepts multipart fields job_ids (JSON array), aspect_ratio, voiceover_gain, music_gain and optional voiceover/music audio files; JSON-only requests remain supported for silent exports.
 - GET /api/assemble/<assembly_id> — owner-token protected job status.
 - GET /api/assemblies/<assembly_id>/file — short-lived signed playback/download link returned by the status endpoint.
 
@@ -138,4 +139,4 @@ For AWS S3, omit `S3_ENDPOINT_URL`, set `S3_REGION` to the bucket's region, and 
 
 If these settings are absent, the app safely falls back to local storage and displays a warning. If an upload fails after a provider has already generated a clip, the app marks the clip completed and keeps the local MP4 rather than encouraging a second paid generation; download it before the next redeploy. The history endpoint checks object availability, and completed clip links create a new short-lived signed URL when opened.
 
-**Remaining limitations:** job metadata is still in SQLite unless `DATABASE_URL` is configured; no Render PostgreSQL instance is currently provisioned. Analysis jobs remain in process memory. The current FFmpeg export is silent and uses hard cuts; voiceover recording/generation, music and sound-effect mixing, transitions, subtitles and final audio mastering remain future work. Actual FFmpeg execution on the Render instance and an S3-backed export have not yet been verified.
+**Remaining limitations:** job metadata is still in SQLite unless `DATABASE_URL` is configured; no Render PostgreSQL instance is currently provisioned. Analysis jobs remain in process memory. The FFmpeg export supports optional uploaded narration and looping background music, but not a multi-track timeline, TTS, generated music, timed sound effects, transitions, subtitles or final audio mastering. Actual FFmpeg execution on the Render instance and an S3-backed export have not yet been verified.
