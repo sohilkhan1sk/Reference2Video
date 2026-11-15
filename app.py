@@ -22,7 +22,7 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 @app.errorhandler(413)
 def request_too_large(_error):
-    return jsonify(error="This video is too large for the current server. Please compress it or upload a video under 50 MB."), 413
+    return jsonify(error="This upload exceeds the 50 MB request limit. Keep each optional audio track under 20 MB."), 413
 
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
@@ -35,6 +35,8 @@ init_job_store()
 mark_stale_video_jobs()
 mark_stale_assembly_jobs()
 ALLOWED = {"mp4", "mov", "webm", "mkv", "avi"}
+ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus", ".aiff"}
+MAX_AUDIO_FILE_BYTES = 20 * 1024 * 1024
 
 VIDEO_PROVIDER = "Vercel AI Gateway / Alibaba Cloud"
 VIDEO_MODEL = "alibaba/wan-v3.0-video"
@@ -322,7 +324,9 @@ def _assembly_file_url(assembly_id, download=False):
     )
 
 
-def run_assembly_job(assembly_id, source_job_ids, aspect_ratio):
+def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
+                    voiceover_path=None, music_path=None,
+                    voiceover_gain=1.0, music_gain=0.18):
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
     output_path = ASSEMBLY_DIR / f"{assembly_id}.mp4"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -364,6 +368,10 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio):
             progress_callback=lambda message: update_assembly_job(
                 assembly_id, message=message
             ),
+            voiceover_path=voiceover_path,
+            music_path=music_path,
+            voiceover_gain=voiceover_gain,
+            music_gain=music_gain,
         )
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("FFmpeg produced an empty or invalid MP4 export.")
@@ -382,12 +390,18 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio):
                     "Durable export upload failed for assembly %s", assembly_id
                 )
 
+        audio_labels = []
+        if voiceover_path:
+            audio_labels.append("voiceover")
+        if music_path:
+            audio_labels.append("background music")
+        audio_suffix = " with " + " + ".join(audio_labels) if audio_labels else " (silent)"
         if output_uri:
-            message = "Finished MP4 ready — saved in durable private object storage."
+            message = "Finished MP4 ready" + audio_suffix + " — saved in durable private object storage."
         elif storage_warning:
-            message = "Finished MP4 ready, but durable upload failed. Download it before a server restart or redeploy."
+            message = "Finished MP4 ready" + audio_suffix + ", but durable upload failed. Download it before a server restart or redeploy."
         else:
-            message = "Finished MP4 ready in temporary server storage. Configure S3-compatible storage to retain it across redeploys."
+            message = "Finished MP4 ready" + audio_suffix + " in temporary server storage. Configure S3-compatible storage to retain it across redeploys."
 
         update_assembly_job(
             assembly_id, status="COMPLETED", message=message,
@@ -624,11 +638,56 @@ def list_recent_video_jobs():
     ), 200
 
 @app.post("/api/assemble")
+def _parse_audio_gain(value, default, maximum, label):
+    if value in (None, ""):
+        return default
+    try:
+        gain = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} gain must be a number.") from exc
+    if not 0 <= gain <= maximum:
+        raise ValueError(f"{label} gain must be between 0 and {maximum}.")
+    return round(gain, 3)
+
+
+def _save_optional_audio_upload(field_name, target_dir):
+    uploaded = request.files.get(field_name)
+    if not uploaded or not uploaded.filename:
+        return None
+    safe_name = secure_filename(uploaded.filename)
+    extension = Path(safe_name).suffix.lower()
+    if extension not in ALLOWED_AUDIO_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_AUDIO_EXTENSIONS))
+        raise ValueError(f"{field_name.title()} must use one of these formats: {allowed}.")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{field_name}{extension}"
+    uploaded.save(target)
+    if not target.is_file() or target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+        raise ValueError(f"The uploaded {field_name} file is empty.")
+    if target.stat().st_size > MAX_AUDIO_FILE_BYTES:
+        target.unlink(missing_ok=True)
+        raise ValueError(f"Keep each audio file at or below 20 MB.")
+    return target
+
+
+@app.post("/api/assemble")
 def create_assembly():
     if not owner_token_matches(request.headers.get("X-Owner-Token", "")):
         return jsonify(error="Owner access token is missing or invalid."), 403
-    data = request.get_json(silent=True) or {}
-    source_job_ids = data.get("job_ids")
+
+    if request.mimetype == "multipart/form-data":
+        data = request.form
+    else:
+        data = request.get_json(silent=True) or {}
+    raw_job_ids = data.get("job_ids")
+    if isinstance(raw_job_ids, str):
+        try:
+            source_job_ids = json.loads(raw_job_ids)
+        except json.JSONDecodeError:
+            return jsonify(error="The selected clip list is not valid JSON."), 400
+    else:
+        source_job_ids = raw_job_ids
     if not isinstance(source_job_ids, list) or not source_job_ids:
         return jsonify(error="Choose at least one completed scene clip from history."), 400
     if len(source_job_ids) > 30:
@@ -640,6 +699,11 @@ def create_assembly():
     aspect_ratio = str(data.get("aspect_ratio", "16:9"))
     if aspect_ratio not in {"16:9", "9:16"}:
         return jsonify(error="Choose 16:9 landscape or 9:16 vertical export."), 400
+    try:
+        voiceover_gain = _parse_audio_gain(data.get("voiceover_gain"), 1.0, 2.0, "Voiceover")
+        music_gain = _parse_audio_gain(data.get("music_gain"), 0.18, 1.0, "Music")
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
 
     for index, source_job_id in enumerate(source_job_ids, start=1):
         source_job = get_video_job_record(source_job_id)
@@ -658,30 +722,58 @@ def create_assembly():
         return jsonify(error=f"Selected clip {index} is not available. Reload history or regenerate the missing clip."), 409
 
     assembly_id = uuid.uuid4().hex
-    create_assembly_job(
-        assembly_id,
-        status="PROCESSING",
-        message="Preparing your silent MP4 export…",
-        created_at=time.time(),
-        aspect_ratio=aspect_ratio,
-        source_job_ids=json.dumps(source_job_ids),
-    )
+    work_dir = GENERATED_DIR / "assembly_work" / assembly_id
+    work_dir.mkdir(parents=True, exist_ok=True)
     try:
+        voiceover_path = _save_optional_audio_upload("voiceover", work_dir)
+        music_path = _save_optional_audio_upload("music", work_dir)
+    except ValueError as exc:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        return jsonify(error=str(exc)), 400
+
+    audio_metadata = {
+        "voiceover": bool(voiceover_path),
+        "music": bool(music_path),
+        "voiceover_gain": voiceover_gain,
+        "music_gain": music_gain,
+    }
+    try:
+        create_assembly_job(
+            assembly_id,
+            status="PROCESSING",
+            message="Preparing your MP4 export…",
+            created_at=time.time(),
+            aspect_ratio=aspect_ratio,
+            source_job_ids=json.dumps(source_job_ids),
+            audio_tracks=json.dumps(audio_metadata),
+        )
         thread = threading.Thread(
             target=run_assembly_job,
-            args=(assembly_id, source_job_ids, aspect_ratio),
+            args=(
+                assembly_id, source_job_ids, aspect_ratio,
+                str(voiceover_path) if voiceover_path else None,
+                str(music_path) if music_path else None,
+                voiceover_gain, music_gain,
+            ),
             daemon=True,
         )
         thread.start()
     except Exception as exc:
-        update_assembly_job(
-            assembly_id, status="FAILED", message="Could not start MP4 assembly",
-            error=str(exc)[:1200]
-        )
+        shutil.rmtree(work_dir, ignore_errors=True)
+        try:
+            update_assembly_job(
+                assembly_id, status="FAILED", message="Could not start MP4 assembly",
+                error=str(exc)[:1200]
+            )
+        except Exception:
+            app.logger.exception("Could not persist assembly startup failure")
+        app.logger.exception("Could not start assembly worker %s", assembly_id)
         return jsonify(error="Could not start the assembly worker. Please retry."), 500
+
     return jsonify(
         assembly_id=assembly_id, status="PROCESSING",
         aspect_ratio=aspect_ratio, source_count=len(source_job_ids),
+        has_voiceover=bool(voiceover_path), has_music=bool(music_path),
         provider="FFmpeg (local server processing)", estimated_cost_usd=0
     ), 202
 
@@ -698,6 +790,10 @@ def get_assembly_status(assembly_id):
         return jsonify(error="Assembly job not found."), 404
     completed = job.get("status") == "COMPLETED"
     source_ids = json.loads(job.get("source_job_ids") or "[]")
+    try:
+        audio_tracks = json.loads(job.get("audio_tracks") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        audio_tracks = {}
     return jsonify(
         assembly_id=assembly_id,
         status=job.get("status"),
@@ -705,6 +801,8 @@ def get_assembly_status(assembly_id):
         error=job.get("error"),
         aspect_ratio=job.get("aspect_ratio"),
         source_count=len(source_ids),
+        has_voiceover=bool(audio_tracks.get("voiceover")),
+        has_music=bool(audio_tracks.get("music")),
         video_url=_assembly_file_url(assembly_id, False) if completed else None,
         download_url=_assembly_file_url(assembly_id, True) if completed else None,
         storage_backend="s3" if str(job.get("output_uri") or "").startswith("s3://") else "local",
