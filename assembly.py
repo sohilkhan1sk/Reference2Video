@@ -197,4 +197,3 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
     if not destination.is_file() or destination.stat().st_size == 0:
         raise RuntimeError("FFmpeg did not produce a finished MP4 export.")
     return destination
-"
