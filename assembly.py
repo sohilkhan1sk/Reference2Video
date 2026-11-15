@@ -87,10 +87,10 @@ def build_audio_mux_command(ffmpeg, silent_video, output_path,
 
     if voiceover_path and music_path:
         graph = (
-            f"[1:a]aresample=48000,volume={voice_gain},apad[voice];"
+            f"[1:a]aresample=48000,volume={voice_gain},apad,asplit=2[voice_mix][voice_sc];"
             f"[2:a]aresample=48000,volume={music_level}[music];"
-            "[music][voice]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];"
-            "[voice][ducked]amix=inputs=2:duration=longest:dropout_transition=2,"
+            "[music][voice_sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];"
+            "[voice_mix][ducked]amix=inputs=2:duration=longest:dropout_transition=2,"
             "alimiter=limit=0.95[aout]"
         )
     elif voiceover_path:
