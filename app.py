@@ -637,7 +637,6 @@ def list_recent_video_jobs():
         media_storage_configured=media_storage_configured(),
     ), 200
 
-@app.post("/api/assemble")
 def _parse_audio_gain(value, default, maximum, label):
     if value in (None, ""):
         return default
