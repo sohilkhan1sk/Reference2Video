@@ -112,9 +112,16 @@ def init_job_store():
                 aspect_ratio TEXT NOT NULL,
                 source_job_ids TEXT NOT NULL,
                 output_uri TEXT,
-                error TEXT
+                error TEXT,
+                audio_tracks TEXT
             )
         """)
+        if _BACKEND == "postgres":
+            _execute(conn, "ALTER TABLE assembly_jobs ADD COLUMN IF NOT EXISTS audio_tracks TEXT")
+        else:
+            columns = {row["name"] for row in _execute(conn, "PRAGMA table_info(assembly_jobs)").fetchall()}
+            if "audio_tracks" not in columns:
+                _execute(conn, "ALTER TABLE assembly_jobs ADD COLUMN audio_tracks TEXT")
         _execute(conn, """
             CREATE INDEX IF NOT EXISTS idx_assembly_jobs_created_at
             ON assembly_jobs (created_at)
@@ -199,7 +206,7 @@ def mark_stale_video_jobs(stale_after_seconds=1200):
 
 _ASSEMBLY_FIELDS = {
     "status", "message", "created_at", "updated_at", "aspect_ratio",
-    "source_job_ids", "output_uri", "error",
+    "source_job_ids", "output_uri", "error", "audio_tracks",
 }
 
 
