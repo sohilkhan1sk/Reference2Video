@@ -1,5 +1,5 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
-let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={};
+let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={},sfxCueSequence=0;
 fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
@@ -77,42 +77,84 @@ if(target<0||target>=assemblyQueue.length)return;
 [ assemblyQueue[index],assemblyQueue[target] ]=[ assemblyQueue[target],assemblyQueue[index] ];
 renderAssemblyQueue();
 }
+function addSfxCue(){
+ const list=document.getElementById('sfxCueList');
+ if(!list)return;
+ if(list.querySelectorAll('.sfx-cue').length>=6){
+  const status=document.getElementById('assemblyStatus');
+  if(status)status.textContent='A maximum of six timed SFX cues can be added to one export.';
+  return;
+ }
+ const id=sfxCueSequence++;
+ const row=document.createElement('div');
+ row.className='sfx-cue';
+ row.dataset.sfxId=String(id);
+ row.innerHTML='<label>SFX FILE<input type="file" data-sfx-file accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,.aiff,audio/*"><small data-sfx-name>No file selected · max 10 MB</small></label><label>START TIME (SECONDS)<input type="number" data-sfx-start min="0" max="900" step="0.1" value="0"></label><label class="sfx-gain">LEVEL <input type="range" data-sfx-gain min="0" max="200" step="5" value="100"><span data-sfx-gain-value>100%</span></label><button type="button" class="secondary sfx-remove">Remove</button>';
+ const file=row.querySelector('[data-sfx-file]');
+ file.addEventListener('change',()=>{row.querySelector('[data-sfx-name]').textContent=file.files?.[0]?.name||'No file selected · max 10 MB';});
+ const gain=row.querySelector('[data-sfx-gain]');
+ gain.addEventListener('input',()=>{row.querySelector('[data-sfx-gain-value]').textContent=gain.value+'%';});
+ row.querySelector('.sfx-remove').addEventListener('click',()=>row.remove());
+ list.appendChild(row);
+}
+document.getElementById('addSfxBtn')?.addEventListener('click',addSfxCue);
 async function createAssembly(){
-const button=document.getElementById('assembleBtn'),output=document.getElementById('assemblyOutput');
-const token=document.getElementById('videoAccessToken')?.value.trim()||'';
-const status=document.getElementById('assemblyStatus');
-if(!token){if(status)status.textContent='Enter the owner access token configured privately in Render first.';return;}
-if(!assemblyQueue.length){if(status)status.textContent='Add at least one completed clip to the assembly queue.';return;}
-const aspect=document.getElementById('assemblyAspect')?.value||'16:9';
-const voiceover=document.getElementById('voiceoverFile')?.files?.[0]||null;
-const music=document.getElementById('musicFile')?.files?.[0]||null;
-for(const file of [voiceover,music]){
-if(file&&file.size>20*1024*1024){if(status)status.textContent='Each audio file must be 20 MB or smaller.';return;}
-}
-const voiceoverGain=Number(document.getElementById('voiceoverGain')?.value||100)/100;
-const musicGain=Number(document.getElementById('musicGain')?.value||18)/100;
-const tracks=[voiceover?'voiceover':null,music?'background music':null].filter(Boolean);
-const trackSummary=tracks.length?tracks.join(' + '):'silent audio';
-if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4 with '+trackSummary+'? Voiceover starts at 00:00; background music loops and is ducked under narration. FFmpeg uses the server and does not call a paid AI provider.'))return;
-button.disabled=true;
-output.innerHTML='<div class="generation-status"><span class="spinner"></span><span>Starting FFmpeg assembly…</span></div>';
-if(status)status.textContent='Preparing '+trackSummary+'. No paid video-generation request is sent.';
-try{
-const form=new FormData();
-form.append('job_ids',JSON.stringify(assemblyQueue.slice()));
-form.append('aspect_ratio',aspect);
-form.append('voiceover_gain',String(voiceoverGain));
-form.append('music_gain',String(musicGain));
-if(voiceover)form.append('voiceover',voiceover);
-if(music)form.append('music',music);
-const response=await fetch('/api/assemble',{method:'POST',headers:{'X-Owner-Token':token},body:form});
-const data=await readJsonResponse(response,'MP4 assembly');
-if(!response.ok)throw Error(data.error||'Could not start assembly (HTTP '+response.status+').');
-await pollAssembly(data.assembly_id,token,button,output);
-}catch(err){
-output.innerHTML='<p class="generation-error">'+esc(err.message)+'</p>';
-button.disabled=false;
-}
+ const button=document.getElementById('assembleBtn'),output=document.getElementById('assemblyOutput');
+ const token=document.getElementById('videoAccessToken')?.value.trim()||'';
+ const status=document.getElementById('assemblyStatus');
+ if(!token){if(status)status.textContent='Enter the owner access token configured privately in Render first.';return;}
+ if(!assemblyQueue.length){if(status)status.textContent='Add at least one completed clip to the assembly queue.';return;}
+ const aspect=document.getElementById('assemblyAspect')?.value||'16:9';
+ const voiceover=document.getElementById('voiceoverFile')?.files?.[0]||null;
+ const music=document.getElementById('musicFile')?.files?.[0]||null;
+ const soundEffects=[];
+ for(const row of document.querySelectorAll('.sfx-cue')){
+  const file=row.querySelector('[data-sfx-file]')?.files?.[0]||null;
+  if(!file)continue;
+  if(file.size>10*1024*1024){if(status)status.textContent='Each SFX cue must be 10 MB or smaller.';return;}
+  const start=Number(row.querySelector('[data-sfx-start]')?.value||0);
+  const gain=Number(row.querySelector('[data-sfx-gain]')?.value||100)/100;
+  if(!Number.isFinite(start)||start<0||start>900){if(status)status.textContent='SFX start times must be between 0 and 900 seconds.';return;}
+  if(!Number.isFinite(gain)||gain<0||gain>2){if(status)status.textContent='SFX levels must be between 0% and 200%.';return;}
+  soundEffects.push({field_name:'sfx_'+row.dataset.sfxId,start_seconds:start,gain});
+ }
+ if(soundEffects.length>6){if(status)status.textContent='Use no more than six timed SFX cues.';return;}
+ for(const file of [voiceover,music]){
+  if(file&&file.size>20*1024*1024){if(status)status.textContent='Voiceover and music files must be 20 MB or smaller.';return;}
+ }
+ const sfxFiles=Array.from(document.querySelectorAll('.sfx-cue [data-sfx-file]')).map(input=>input.files?.[0]||null);
+ const totalBytes=[voiceover,music,...sfxFiles].filter(Boolean).reduce((sum,file)=>sum+file.size,0);
+ if(totalBytes>48*1024*1024){if(status)status.textContent='Keep all audio uploads together under 48 MB (the server request limit is 50 MB).';return;}
+ const voiceoverGain=Number(document.getElementById('voiceoverGain')?.value||100)/100;
+ const musicGain=Number(document.getElementById('musicGain')?.value||18)/100;
+ const tracks=[voiceover?'voiceover':null,music?'background music':null,soundEffects.length?(soundEffects.length+' timed SFX cue(s)'):null].filter(Boolean);
+ const trackSummary=tracks.length?tracks.join(' + '):'silent audio';
+ if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4 with '+trackSummary+'? Voiceover/music start at 00:00; each SFX cue starts at its selected timestamp. FFmpeg uses the server and does not call a paid AI provider.'))return;
+ button.disabled=true;
+ output.innerHTML='<div class="generation-status"><span class="spinner"></span><span>Starting FFmpeg assembly…</span></div>';
+ if(status)status.textContent='Preparing '+trackSummary+'. No paid video-generation request is sent.';
+ try{
+  const form=new FormData();
+  form.append('job_ids',JSON.stringify(assemblyQueue.slice()));
+  form.append('aspect_ratio',aspect);
+  form.append('voiceover_gain',String(voiceoverGain));
+  form.append('music_gain',String(musicGain));
+  form.append('sound_effects',JSON.stringify(soundEffects));
+  if(voiceover)form.append('voiceover',voiceover);
+  if(music)form.append('music',music);
+  for(const cue of soundEffects){
+   const row=Array.from(document.querySelectorAll('.sfx-cue')).find(item=>String(item.dataset.sfxId)===cue.field_name.slice(4));
+   const file=row?.querySelector('[data-sfx-file]')?.files?.[0];
+   if(file)form.append(cue.field_name,file);
+  }
+  const response=await fetch('/api/assemble',{method:'POST',headers:{'X-Owner-Token':token},body:form});
+  const data=await readJsonResponse(response,'MP4 assembly');
+  if(!response.ok)throw Error(data.error||'Could not start assembly (HTTP '+response.status+').');
+  await pollAssembly(data.assembly_id,token,button,output);
+ }catch(err){
+  output.innerHTML='<p class="generation-error">'+esc(err.message)+'</p>';
+  button.disabled=false;
+ }
 }
 async function pollAssembly(assemblyId,token,button,output){
 try{
@@ -121,7 +163,7 @@ const data=await readJsonResponse(response,'Assembly status');
 if(!response.ok)throw Error(data.error||'Could not check assembly status (HTTP '+response.status+').');
 if(data.status==='FAILED')throw Error(data.error||'FFmpeg assembly failed.');
 if(data.status==='COMPLETED'){
-output.innerHTML='<video controls playsinline preload="metadata" src="'+esc(data.video_url)+'"></video><div class="video-actions"><a href="'+esc(data.download_url)+'">Download finished MP4 ↓</a><span>'+esc(data.aspect_ratio)+' · '+esc(data.source_count)+' clips · '+([data.has_voiceover?'voiceover':null,data.has_music?'background music':null].filter(Boolean).join(' + ')||'silent')+'</span></div>'+(data.error?'<p class="generation-error">Storage warning: '+esc(data.error)+'</p>':(data.storage_backend==='s3'?'<p class="assembly-note">Saved in durable private object storage.</p>':'<p class="assembly-note">Saved on temporary server storage. Download it before a Render restart or redeploy.</p>'));
+output.innerHTML='<video controls playsinline preload="metadata" src="'+esc(data.video_url)+'"></video><div class="video-actions"><a href="'+esc(data.download_url)+'">Download finished MP4 ↓</a><span>'+esc(data.aspect_ratio)+' · '+esc(data.source_count)+' clips · '+([data.has_voiceover?'voiceover':null,data.has_music?'background music':null,data.sound_effect_count?(data.sound_effect_count+' timed SFX cue(s)'):null].filter(Boolean).join(' + ')||'silent')+'</span></div>'+(data.error?'<p class="generation-error">Storage warning: '+esc(data.error)+'</p>':(data.storage_backend==='s3'?'<p class="assembly-note">Saved in durable private object storage.</p>':'<p class="assembly-note">Saved on temporary server storage. Download it before a Render restart or redeploy.</p>'));
 const status=document.getElementById('assemblyStatus');
 if(status)status.textContent='Finished MP4 is ready. The preview/download links are temporary and expire after 15 minutes; reload history and assemble again for fresh links if needed.';
 button.disabled=false;
