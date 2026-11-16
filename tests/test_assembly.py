@@ -125,6 +125,92 @@ class AssemblyTests(unittest.TestCase):
             self.assertEqual(calls[-1][-1], str(output))
             self.assertTrue(output.is_file())
 
+    def test_timed_sound_effects_are_delayed_and_mixed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "impact.wav"
+            second = root / "whoosh.mp3"
+            first.write_bytes(b"impact")
+            second.write_bytes(b"whoosh")
+            command = build_audio_mux_command(
+                "ffmpeg", "joined.mp4", "final.mp4",
+                sound_effects=[
+                    {"path": first, "start_seconds": 2.5, "gain": 0.8},
+                    {"path": second, "start_seconds": 7.25, "gain": 1.2},
+                ],
+            )
+            graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("adelay=2500:all=1", graph)
+            self.assertIn("adelay=7250:all=1", graph)
+            self.assertIn("amix=inputs=2", graph)
+            self.assertEqual(command.count("-i"), 3)
+            self.assertIn("-shortest", command)
+            self.assertIn("aac", command)
+
+    def test_timed_sound_effects_mix_with_voiceover_and_ducked_music(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            voice = root / "voice.wav"
+            music = root / "music.mp3"
+            sfx = root / "click.wav"
+            for path in (voice, music, sfx):
+                path.write_bytes(b"audio")
+            command = build_audio_mux_command(
+                "ffmpeg", "joined.mp4", "final.mp4", voice, music,
+                sound_effects=[{"path": sfx, "start_seconds": 4, "gain": 1}],
+            )
+            graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("sidechaincompress", graph)
+            self.assertIn("adelay=4000:all=1", graph)
+            self.assertIn("amix=inputs=3", graph)
+
+    def test_timed_sound_effect_validation_rejects_bad_timestamps_and_missing_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sfx = root / "click.wav"
+            sfx.write_bytes(b"audio")
+            with self.assertRaises(ValueError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4",
+                    sound_effects=[{"path": sfx, "start_seconds": 901, "gain": 1}],
+                )
+            with self.assertRaises(ValueError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4",
+                    sound_effects=[{"path": sfx, "start_seconds": 1, "gain": 2.1}],
+                )
+            with self.assertRaises(FileNotFoundError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4",
+                    sound_effects=[{"path": root / "missing.wav", "start_seconds": 1, "gain": 1}],
+                )
+
+    def test_assemble_clips_includes_timed_sfx_in_final_mux(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "scene.mp4"
+            sfx = root / "impact.wav"
+            source.write_bytes(b"scene")
+            sfx.write_bytes(b"impact")
+            output = root / "exports" / "final.mp4"
+            calls = []
+
+            def fake_runner(command, **kwargs):
+                calls.append(command)
+                Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+                Path(command[-1]).write_bytes(b"fake-output")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            assemble_clips(
+                [source], output, "16:9", "ffmpeg", root / "work",
+                runner=fake_runner,
+                sound_effects=[{"path": sfx, "start_seconds": 3.25, "gain": 0.9}],
+            )
+            self.assertEqual(len(calls), 3)
+            graph = calls[-1][calls[-1].index("-filter_complex") + 1]
+            self.assertIn("adelay=3250:all=1", graph)
+            self.assertTrue(output.is_file())
+
     def test_empty_or_missing_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
