@@ -22,7 +22,7 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 @app.errorhandler(413)
 def request_too_large(_error):
-    return jsonify(error="This upload exceeds the 50 MB request limit. Keep each optional audio track under 20 MB."), 413
+    return jsonify(error="This upload exceeds the 50 MB total request limit. Voiceover/music files may be up to 20 MB each; each SFX cue may be up to 10 MB."), 413
 
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
@@ -37,6 +37,8 @@ mark_stale_assembly_jobs()
 ALLOWED = {"mp4", "mov", "webm", "mkv", "avi"}
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus", ".aiff"}
 MAX_AUDIO_FILE_BYTES = 20 * 1024 * 1024
+MAX_SFX_FILE_BYTES = 10 * 1024 * 1024
+MAX_SFX_CUES = 6
 
 VIDEO_PROVIDER = "Vercel AI Gateway / Alibaba Cloud"
 VIDEO_MODEL = "alibaba/wan-v3.0-video"
@@ -326,7 +328,8 @@ def _assembly_file_url(assembly_id, download=False):
 
 def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
                     voiceover_path=None, music_path=None,
-                    voiceover_gain=1.0, music_gain=0.18):
+                    voiceover_gain=1.0, music_gain=0.18,
+                    sound_effects=None):
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
     output_path = ASSEMBLY_DIR / f"{assembly_id}.mp4"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -372,6 +375,7 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
             music_path=music_path,
             voiceover_gain=voiceover_gain,
             music_gain=music_gain,
+            sound_effects=sound_effects,
         )
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("FFmpeg produced an empty or invalid MP4 export.")
@@ -395,6 +399,8 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
             audio_labels.append("voiceover")
         if music_path:
             audio_labels.append("background music")
+        if sound_effects:
+            audio_labels.append(f"{len(sound_effects)} timed SFX cue(s)")
         audio_suffix = " with " + " + ".join(audio_labels) if audio_labels else " (silent)"
         if output_uri:
             message = "Finished MP4 ready" + audio_suffix + " — saved in durable private object storage."
@@ -649,7 +655,7 @@ def _parse_audio_gain(value, default, maximum, label):
     return round(gain, 3)
 
 
-def _save_optional_audio_upload(field_name, target_dir):
+def _save_optional_audio_upload(field_name, target_dir, max_bytes=MAX_AUDIO_FILE_BYTES, label=None):
     uploaded = request.files.get(field_name)
     if not uploaded or not uploaded.filename:
         return None
@@ -657,18 +663,52 @@ def _save_optional_audio_upload(field_name, target_dir):
     extension = Path(safe_name).suffix.lower()
     if extension not in ALLOWED_AUDIO_EXTENSIONS:
         allowed = ", ".join(sorted(ALLOWED_AUDIO_EXTENSIONS))
-        raise ValueError(f"{field_name.title()} must use one of these formats: {allowed}.")
+        raise ValueError(f"{label or field_name.title()} must use one of these formats: {allowed}.")
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{field_name}{extension}"
     uploaded.save(target)
     if not target.is_file() or target.stat().st_size == 0:
         target.unlink(missing_ok=True)
-        raise ValueError(f"The uploaded {field_name} file is empty.")
-    if target.stat().st_size > MAX_AUDIO_FILE_BYTES:
+        raise ValueError(f"The uploaded {label or field_name} file is empty.")
+    if target.stat().st_size > max_bytes:
         target.unlink(missing_ok=True)
-        raise ValueError(f"Keep each audio file at or below 20 MB.")
+        limit_mb = max_bytes // (1024 * 1024)
+        raise ValueError(f"Keep each {label or field_name} file at or below {limit_mb} MB.")
     return target
 
+
+def _parse_sound_effect_specs(raw_value):
+    if raw_value in (None, ""):
+        return []
+    try:
+        items = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except json.JSONDecodeError as exc:
+        raise ValueError("Timed sound-effect settings are not valid JSON.") from exc
+    if not isinstance(items, list) or len(items) > MAX_SFX_CUES:
+        raise ValueError(f"Add no more than {MAX_SFX_CUES} timed sound-effect cues.")
+    specs = []
+    seen_fields = set()
+    allowed_fields = {f"sfx_{index}" for index in range(MAX_SFX_CUES)}
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Sound-effect cue {index} is invalid.")
+        field_name = item.get("field_name")
+        if field_name not in allowed_fields or field_name in seen_fields:
+            raise ValueError(f"Sound-effect cue {index} has an invalid upload field.")
+        seen_fields.add(field_name)
+        try:
+            start_seconds = float(item.get("start_seconds", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Sound-effect cue {index} start time must be a number.") from exc
+        if not 0 <= start_seconds <= 900:
+            raise ValueError(f"Sound-effect cue {index} start time must be between 0 and 900 seconds.")
+        gain = _parse_audio_gain(item.get("gain", 1.0), 1.0, 2.0, f"Sound-effect cue {index}")
+        specs.append({
+            "field_name": field_name,
+            "start_seconds": round(start_seconds, 3),
+            "gain": gain,
+        })
+    return specs
 
 @app.post("/api/assemble")
 def create_assembly():
@@ -701,8 +741,14 @@ def create_assembly():
     try:
         voiceover_gain = _parse_audio_gain(data.get("voiceover_gain"), 1.0, 2.0, "Voiceover")
         music_gain = _parse_audio_gain(data.get("music_gain"), 0.18, 1.0, "Music")
+        sound_effect_specs = _parse_sound_effect_specs(data.get("sound_effects"))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+
+    expected_sfx_fields = {item["field_name"] for item in sound_effect_specs}
+    uploaded_sfx_fields = {key for key in request.files.keys() if key.startswith("sfx_")}
+    if uploaded_sfx_fields != expected_sfx_fields:
+        return jsonify(error="Each timed SFX cue must have exactly one matching audio file."), 400
 
     for index, source_job_id in enumerate(source_job_ids, start=1):
         source_job = get_video_job_record(source_job_id)
@@ -724,8 +770,22 @@ def create_assembly():
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
     work_dir.mkdir(parents=True, exist_ok=True)
     try:
-        voiceover_path = _save_optional_audio_upload("voiceover", work_dir)
-        music_path = _save_optional_audio_upload("music", work_dir)
+        voiceover_path = _save_optional_audio_upload("voiceover", work_dir, label="Voiceover")
+        music_path = _save_optional_audio_upload("music", work_dir, label="Background music")
+        sound_effects = []
+        for cue_index, spec in enumerate(sound_effect_specs, start=1):
+            cue_path = _save_optional_audio_upload(
+                spec["field_name"], work_dir,
+                max_bytes=MAX_SFX_FILE_BYTES,
+                label=f"Sound-effect cue {cue_index}",
+            )
+            if not cue_path:
+                raise ValueError(f"Choose an audio file for sound-effect cue {cue_index}.")
+            sound_effects.append({
+                "path": str(cue_path),
+                "start_seconds": spec["start_seconds"],
+                "gain": spec["gain"],
+            })
     except ValueError as exc:
         shutil.rmtree(work_dir, ignore_errors=True)
         return jsonify(error=str(exc)), 400
@@ -735,6 +795,10 @@ def create_assembly():
         "music": bool(music_path),
         "voiceover_gain": voiceover_gain,
         "music_gain": music_gain,
+        "sound_effects": [
+            {"start_seconds": cue["start_seconds"], "gain": cue["gain"]}
+            for cue in sound_effects
+        ],
     }
     try:
         create_assembly_job(
@@ -752,7 +816,7 @@ def create_assembly():
                 assembly_id, source_job_ids, aspect_ratio,
                 str(voiceover_path) if voiceover_path else None,
                 str(music_path) if music_path else None,
-                voiceover_gain, music_gain,
+                voiceover_gain, music_gain, sound_effects,
             ),
             daemon=True,
         )
@@ -773,6 +837,7 @@ def create_assembly():
         assembly_id=assembly_id, status="PROCESSING",
         aspect_ratio=aspect_ratio, source_count=len(source_job_ids),
         has_voiceover=bool(voiceover_path), has_music=bool(music_path),
+        has_sound_effects=bool(sound_effects), sound_effect_count=len(sound_effects),
         provider="FFmpeg (local server processing)", estimated_cost_usd=0
     ), 202
 
@@ -802,6 +867,8 @@ def get_assembly_status(assembly_id):
         source_count=len(source_ids),
         has_voiceover=bool(audio_tracks.get("voiceover")),
         has_music=bool(audio_tracks.get("music")),
+        has_sound_effects=bool(audio_tracks.get("sound_effects")),
+        sound_effect_count=len(audio_tracks.get("sound_effects") or []),
         video_url=_assembly_file_url(assembly_id, False) if completed else None,
         download_url=_assembly_file_url(assembly_id, True) if completed else None,
         storage_backend="s3" if str(job.get("output_uri") or "").startswith("s3://") else "local",
