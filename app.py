@@ -693,7 +693,7 @@ def _parse_sound_effect_specs(raw_value):
         if not isinstance(item, dict):
             raise ValueError(f"Sound-effect cue {index} is invalid.")
         field_name = item.get("field_name")
-        if field_name not in allowed_fields or field_name in seen_fields:
+        if not isinstance(field_name, str) or field_name not in allowed_fields or field_name in seen_fields:
             raise ValueError(f"Sound-effect cue {index} has an invalid upload field.")
         seen_fields.add(field_name)
         try:
