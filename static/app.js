@@ -1,5 +1,5 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
-let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={},sfxCueSequence=0;
+let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={};
 fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
@@ -85,7 +85,8 @@ function addSfxCue(){
   if(status)status.textContent='A maximum of six timed SFX cues can be added to one export.';
   return;
  }
- const id=sfxCueSequence++;
+ const usedIds=new Set(Array.from(list.querySelectorAll('.sfx-cue')).map(item=>Number(item.dataset.sfxId)));
+ const id=[0,1,2,3,4,5].find(value=>!usedIds.has(value));
  const row=document.createElement('div');
  row.className='sfx-cue';
  row.dataset.sfxId=String(id);
