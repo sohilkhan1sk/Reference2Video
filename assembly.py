@@ -1,4 +1,5 @@
 """FFmpeg assembly helpers for scene clips with optional narration and music."""
+import math
 import subprocess
 from pathlib import Path
 
@@ -63,11 +64,35 @@ def _gain_text(value, maximum, label):
     return f"{number:.3f}".rstrip("0").rstrip(".") or "0"
 
 
+def _validated_sound_effects(sound_effects):
+    effects = list(sound_effects or [])
+    if len(effects) > 6:
+        raise ValueError("An export can contain at most six timed sound-effect cues.")
+    validated = []
+    for index, effect in enumerate(effects, start=1):
+        if not isinstance(effect, dict) or not effect.get("path"):
+            raise ValueError(f"Sound-effect cue {index} is invalid.")
+        path = Path(effect["path"])
+        if not path.is_file() or path.stat().st_size == 0:
+            raise FileNotFoundError(f"Sound-effect cue {index} is missing or empty.")
+        try:
+            start = float(effect.get("start_seconds", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Sound-effect cue {index} start time must be a number.") from exc
+        if not math.isfinite(start) or not 0 <= start <= 900:
+            raise ValueError(f"Sound-effect cue {index} start time must be between 0 and 900 seconds.")
+        gain = _gain_text(effect.get("gain", 1.0), 2.0, f"Sound-effect cue {index}")
+        validated.append({"path": path, "start_seconds": round(start, 3), "gain": gain})
+    return validated
+
+
 def build_audio_mux_command(ffmpeg, silent_video, output_path,
                             voiceover_path=None, music_path=None,
-                            voiceover_gain=1.0, music_gain=0.18):
-    """Mux optional narration and looping music; duck music under narration."""
-    if not voiceover_path and not music_path:
+                            voiceover_gain=1.0, music_gain=0.18,
+                            sound_effects=None):
+    """Mix optional narration/music and up to six independently timed SFX cues."""
+    effects = _validated_sound_effects(sound_effects)
+    if not voiceover_path and not music_path and not effects:
         raise ValueError("At least one audio track is required.")
     if voiceover_path and (not Path(voiceover_path).is_file() or Path(voiceover_path).stat().st_size == 0):
         raise FileNotFoundError("The voiceover audio file is missing or empty.")
@@ -76,42 +101,75 @@ def build_audio_mux_command(ffmpeg, silent_video, output_path,
 
     voice_gain = _gain_text(voiceover_gain, 2.0, "Voiceover")
     music_level = _gain_text(music_gain, 1.0, "Music")
-    command = [
-        str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(silent_video),
-    ]
+    command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-i", str(silent_video)]
+    next_input = 1
+    voice_index = None
+    music_index = None
     if voiceover_path:
+        voice_index = next_input
         command.extend(["-i", str(voiceover_path)])
+        next_input += 1
     if music_path:
+        music_index = next_input
         command.extend(["-stream_loop", "-1", "-i", str(music_path)])
+        next_input += 1
 
-    if voiceover_path and music_path:
-        graph = (
-            f"[1:a]aresample=48000,volume={voice_gain},apad,asplit=2[voice_mix][voice_sc];"
-            f"[2:a]aresample=48000,volume={music_level}[music];"
-            "[music][voice_sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];"
-            "[voice_mix][ducked]amix=inputs=2:duration=longest:dropout_transition=2,"
-            "alimiter=limit=0.95[aout]"
+    effect_inputs = []
+    for effect in effects:
+        effect_inputs.append(next_input)
+        command.extend(["-i", str(effect["path"])])
+        next_input += 1
+
+    filters = []
+    mix_labels = []
+    if voice_index is not None:
+        if music_index is not None:
+            filters.append(
+                f"[{voice_index}:a]aresample=48000,volume={voice_gain},apad,"
+                "asplit=2[voice_mix][voice_sc]"
+            )
+        else:
+            filters.append(
+                f"[{voice_index}:a]aresample=48000,volume={voice_gain},apad[voice_mix]"
+            )
+        mix_labels.append("[voice_mix]")
+
+    if music_index is not None:
+        filters.append(f"[{music_index}:a]aresample=48000,volume={music_level}[music_raw]")
+        if voice_index is not None:
+            filters.append(
+                "[music_raw][voice_sc]sidechaincompress="
+                "threshold=0.03:ratio=8:attack=20:release=300[music_mix]"
+            )
+        else:
+            filters.append("[music_raw]anull[music_mix]")
+        mix_labels.append("[music_mix]")
+
+    for cue_index, (effect, input_index) in enumerate(zip(effects, effect_inputs)):
+        delay_ms = int(round(effect["start_seconds"] * 1000))
+        label = f"sfx_{cue_index}"
+        filters.append(
+            f"[{input_index}:a]aresample=48000,volume={effect['gain']},"
+            f"adelay={delay_ms}:all=1,apad[{label}]"
         )
-    elif voiceover_path:
-        graph = (
-            f"[1:a]aresample=48000,volume={voice_gain},apad,"
-            "alimiter=limit=0.95[aout]"
-        )
+        mix_labels.append(f"[{label}]")
+
+    if len(mix_labels) == 1:
+        filters.append(f"{mix_labels[0]}alimiter=limit=0.95[aout]")
     else:
-        graph = (
-            f"[1:a]aresample=48000,volume={music_level},"
-            "alimiter=limit=0.95[aout]"
+        filters.append(
+            "".join(mix_labels)
+            + f"amix=inputs={len(mix_labels)}:duration=longest:"
+              "dropout_transition=2,alimiter=limit=0.95[aout]"
         )
 
     command.extend([
-        "-filter_complex", graph,
+        "-filter_complex", ";".join(filters),
         "-map", "0:v:0", "-map", "[aout]",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-shortest", "-movflags", "+faststart", str(output_path),
     ])
     return command
-
 
 def _run(command, timeout, runner):
     try:
@@ -127,7 +185,8 @@ def _run(command, timeout, runner):
 def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
                    work_dir, progress_callback=None, runner=subprocess.run,
                    voiceover_path=None, music_path=None,
-                   voiceover_gain=1.0, music_gain=0.18):
+                   voiceover_gain=1.0, music_gain=0.18,
+                   sound_effects=None):
     """Normalize and join clips, then optionally mix narration and background music."""
     sources = [Path(path) for path in source_paths]
     if not sources:
@@ -141,6 +200,7 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
     for label, audio_path in (("Voiceover", voiceover_path), ("Background music", music_path)):
         if audio_path and (not Path(audio_path).is_file() or Path(audio_path).stat().st_size == 0):
             raise FileNotFoundError(f"{label} file is missing or empty.")
+    effects = _validated_sound_effects(sound_effects)
     if voiceover_path:
         _gain_text(voiceover_gain, 2.0, "Voiceover")
     if music_path:
@@ -170,7 +230,7 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
         "\n".join(_concat_entry(path) for path in normalized_paths) + "\n",
         encoding="utf-8",
     )
-    has_audio = bool(voiceover_path or music_path)
+    has_audio = bool(voiceover_path or music_path or effects)
     joined_video = work / "joined-silent.mp4" if has_audio else destination
     if progress_callback:
         progress_callback("Joining the normalized clips into one video…")
@@ -190,6 +250,7 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
                 ffmpeg_path, joined_video, destination,
                 voiceover_path=voiceover_path, music_path=music_path,
                 voiceover_gain=voiceover_gain, music_gain=music_gain,
+                sound_effects=effects,
             ),
             timeout=600,
             runner=runner,
