@@ -63,3 +63,5 @@
 .sfx-processing summary{cursor:pointer;color:var(--cyan);font-size:10px}
 .sfx-processing .processing-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:720px){.sfx-processing .processing-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.processing-help{display:block;margin:0 0 12px;color:#9bb4b5;font-size:10px;line-height:1.5}
