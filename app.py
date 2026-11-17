@@ -329,7 +329,7 @@ def _assembly_file_url(assembly_id, download=False):
 def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
                     voiceover_path=None, music_path=None,
                     voiceover_gain=1.0, music_gain=0.18,
-                    sound_effects=None):
+                    sound_effects=None, audio_options=None):
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
     output_path = ASSEMBLY_DIR / f"{assembly_id}.mp4"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -376,6 +376,7 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
             voiceover_gain=voiceover_gain,
             music_gain=music_gain,
             sound_effects=sound_effects,
+            **(audio_options or {}),
         )
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("FFmpeg produced an empty or invalid MP4 export.")
@@ -655,6 +656,42 @@ def _parse_audio_gain(value, default, maximum, label):
     return round(gain, 3)
 
 
+def _parse_audio_processing_options(source, prefix, label):
+    def read(name):
+        key = f"{prefix}_{name}_seconds" if prefix else f"{name}_seconds"
+        return source.get(key, 0)
+
+    def seconds(value, field, maximum):
+        try:
+            parsed = float(value or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} {field} must be a number.") from exc
+        if not math.isfinite(parsed) or parsed < 0 or parsed > maximum:
+            raise ValueError(f"{label} {field} must be between 0 and {maximum} seconds.")
+        return round(parsed, 3)
+
+    trim_start = seconds(read("trim_start"), "trim start", 3600)
+    trim_end = seconds(read("trim_end"), "trim end", 3600)
+    fade_in = seconds(read("fade_in"), "fade-in", 10)
+    fade_out_start = seconds(read("fade_out_start"), "fade-out start", 3600)
+    fade_out = seconds(read("fade_out"), "fade-out", 10)
+    if trim_end and trim_end <= trim_start:
+        raise ValueError(f"{label} trim end must be greater than trim start.")
+    if trim_end:
+        segment_length = trim_end - trim_start
+        if fade_in + fade_out > segment_length:
+            raise ValueError(f"{label} fade durations cannot exceed the trimmed audio length.")
+        if fade_out and fade_out_start + fade_out > segment_length:
+            raise ValueError(f"{label} fade-out must finish within the trimmed audio segment.")
+    return {
+        "trim_start_seconds": trim_start,
+        "trim_end_seconds": trim_end,
+        "fade_in_seconds": fade_in,
+        "fade_out_start_seconds": fade_out_start,
+        "fade_out_seconds": fade_out,
+    }
+
+
 def _save_optional_audio_upload(field_name, target_dir, max_bytes=MAX_AUDIO_FILE_BYTES, label=None):
     uploaded = request.files.get(field_name)
     if not uploaded or not uploaded.filename:
@@ -703,10 +740,12 @@ def _parse_sound_effect_specs(raw_value):
         if not 0 <= start_seconds <= 900:
             raise ValueError(f"Sound-effect cue {index} start time must be between 0 and 900 seconds.")
         gain = _parse_audio_gain(item.get("gain", 1.0), 1.0, 2.0, f"Sound-effect cue {index}")
+        processing = _parse_audio_processing_options(item, "", f"Sound-effect cue {index}")
         specs.append({
             "field_name": field_name,
             "start_seconds": round(start_seconds, 3),
             "gain": gain,
+            **processing,
         })
     return specs
 
@@ -741,6 +780,8 @@ def create_assembly():
     try:
         voiceover_gain = _parse_audio_gain(data.get("voiceover_gain"), 1.0, 2.0, "Voiceover")
         music_gain = _parse_audio_gain(data.get("music_gain"), 0.18, 1.0, "Music")
+        voiceover_options = _parse_audio_processing_options(data, "voiceover", "Voiceover")
+        music_options = _parse_audio_processing_options(data, "music", "Music")
         sound_effect_specs = _parse_sound_effect_specs(data.get("sound_effects"))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
@@ -785,6 +826,11 @@ def create_assembly():
                 "path": str(cue_path),
                 "start_seconds": spec["start_seconds"],
                 "gain": spec["gain"],
+                "trim_start_seconds": spec["trim_start_seconds"],
+                "trim_end_seconds": spec["trim_end_seconds"],
+                "fade_in_seconds": spec["fade_in_seconds"],
+                "fade_out_start_seconds": spec["fade_out_start_seconds"],
+                "fade_out_seconds": spec["fade_out_seconds"],
             })
     except ValueError as exc:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -795,8 +841,17 @@ def create_assembly():
         "music": bool(music_path),
         "voiceover_gain": voiceover_gain,
         "music_gain": music_gain,
+        "voiceover_processing": voiceover_options,
+        "music_processing": music_options,
         "sound_effects": [
-            {"start_seconds": cue["start_seconds"], "gain": cue["gain"]}
+            {
+                "start_seconds": cue["start_seconds"], "gain": cue["gain"],
+                "trim_start_seconds": cue["trim_start_seconds"],
+                "trim_end_seconds": cue["trim_end_seconds"],
+                "fade_in_seconds": cue["fade_in_seconds"],
+                "fade_out_start_seconds": cue["fade_out_start_seconds"],
+                "fade_out_seconds": cue["fade_out_seconds"],
+            }
             for cue in sound_effects
         ],
     }
@@ -817,6 +872,10 @@ def create_assembly():
                 str(voiceover_path) if voiceover_path else None,
                 str(music_path) if music_path else None,
                 voiceover_gain, music_gain, sound_effects,
+                {
+                    **{f"voiceover_{key}": value for key, value in voiceover_options.items()},
+                    **{f"music_{key}": value for key, value in music_options.items()},
+                },
             ),
             daemon=True,
         )
