@@ -64,6 +64,65 @@ def _gain_text(value, maximum, label):
     return f"{number:.3f}".rstrip("0").rstrip(".") or "0"
 
 
+def _audio_processing_values(trim_start_seconds=0, trim_end_seconds=0,
+                             fade_in_seconds=0, fade_out_start_seconds=0,
+                             fade_out_seconds=0, label="Audio"):
+    def number(value, field, maximum):
+        try:
+            parsed = float(value or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} {field} must be a number.") from exc
+        if not math.isfinite(parsed) or parsed < 0 or parsed > maximum:
+            raise ValueError(f"{label} {field} must be between 0 and {maximum} seconds.")
+        return round(parsed, 3)
+
+    start = number(trim_start_seconds, "trim start", 3600)
+    end = number(trim_end_seconds, "trim end", 3600)
+    fade_in = number(fade_in_seconds, "fade-in", 10)
+    fade_out_start = number(fade_out_start_seconds, "fade-out start", 3600)
+    fade_out = number(fade_out_seconds, "fade-out", 10)
+    if end and end <= start:
+        raise ValueError(f"{label} trim end must be greater than trim start.")
+    if end:
+        segment_length = end - start
+        if fade_in + fade_out > segment_length:
+            raise ValueError(f"{label} fade durations cannot exceed the trimmed audio length.")
+        if fade_out and fade_out_start + fade_out > segment_length:
+            raise ValueError(f"{label} fade-out must finish within the trimmed audio segment.")
+    return {
+        "trim_start_seconds": start,
+        "trim_end_seconds": end,
+        "fade_in_seconds": fade_in,
+        "fade_out_start_seconds": fade_out_start,
+        "fade_out_seconds": fade_out,
+    }
+
+
+def _build_audio_track_filter(input_index, output_label, gain,
+                              trim_start_seconds=0, trim_end_seconds=0,
+                              fade_in_seconds=0, fade_out_start_seconds=0,
+                              fade_out_seconds=0, label="Audio"):
+    values = _audio_processing_values(
+        trim_start_seconds, trim_end_seconds, fade_in_seconds,
+        fade_out_start_seconds, fade_out_seconds, label
+    )
+    start = f"{values['trim_start_seconds']:.3f}".rstrip("0").rstrip(".") or "0"
+    chain = [f"atrim=start={start}"]
+    if values["trim_end_seconds"]:
+        end = f"{values['trim_end_seconds']:.3f}".rstrip("0").rstrip(".")
+        chain[0] += f":end={end}"
+    chain.extend(["asetpts=PTS-STARTPTS", "aresample=48000"])
+    if values["fade_in_seconds"]:
+        chain.append(f"afade=t=in:st=0:d={values['fade_in_seconds']}")
+    if values["fade_out_seconds"]:
+        chain.append(
+            f"afade=t=out:st={values['fade_out_start_seconds']}:"
+            f"d={values['fade_out_seconds']}"
+        )
+    chain.append(f"volume={gain}")
+    return f"[{input_index}:a]{','.join(chain)}[{output_label}]"
+
+
 def _validated_sound_effects(sound_effects):
     effects = list(sound_effects or [])
     if len(effects) > 6:
@@ -82,15 +141,37 @@ def _validated_sound_effects(sound_effects):
         if not math.isfinite(start) or not 0 <= start <= 900:
             raise ValueError(f"Sound-effect cue {index} start time must be between 0 and 900 seconds.")
         gain = _gain_text(effect.get("gain", 1.0), 2.0, f"Sound-effect cue {index}")
-        validated.append({"path": path, "start_seconds": round(start, 3), "gain": gain})
+        processing = _audio_processing_values(
+            effect.get("trim_start_seconds", 0),
+            effect.get("trim_end_seconds", 0),
+            effect.get("fade_in_seconds", 0),
+            effect.get("fade_out_start_seconds", 0),
+            effect.get("fade_out_seconds", 0),
+            f"Sound-effect cue {index}",
+        )
+        validated.append({
+            "path": path,
+            "start_seconds": round(start, 3),
+            "gain": gain,
+            **processing,
+        })
     return validated
-
 
 def build_audio_mux_command(ffmpeg, silent_video, output_path,
                             voiceover_path=None, music_path=None,
                             voiceover_gain=1.0, music_gain=0.18,
-                            sound_effects=None):
-    """Mix optional narration/music and up to six independently timed SFX cues."""
+                            sound_effects=None,
+                            voiceover_trim_start_seconds=0,
+                            voiceover_trim_end_seconds=0,
+                            voiceover_fade_in_seconds=0,
+                            voiceover_fade_out_start_seconds=0,
+                            voiceover_fade_out_seconds=0,
+                            music_trim_start_seconds=0,
+                            music_trim_end_seconds=0,
+                            music_fade_in_seconds=0,
+                            music_fade_out_start_seconds=0,
+                            music_fade_out_seconds=0):
+    """Mix optional narration, music and timed SFX with per-track trims and fades."""
     effects = _validated_sound_effects(sound_effects)
     if not voiceover_path and not music_path and not effects:
         raise ValueError("At least one audio track is required.")
@@ -123,19 +204,25 @@ def build_audio_mux_command(ffmpeg, silent_video, output_path,
     filters = []
     mix_labels = []
     if voice_index is not None:
+        filters.append(_build_audio_track_filter(
+            voice_index, "voice_pre", voice_gain,
+            voiceover_trim_start_seconds, voiceover_trim_end_seconds,
+            voiceover_fade_in_seconds, voiceover_fade_out_start_seconds,
+            voiceover_fade_out_seconds, "Voiceover"
+        ))
         if music_index is not None:
-            filters.append(
-                f"[{voice_index}:a]aresample=48000,volume={voice_gain},apad,"
-                "asplit=2[voice_mix][voice_sc]"
-            )
+            filters.append("[voice_pre]apad,asplit=2[voice_mix][voice_sc]")
         else:
-            filters.append(
-                f"[{voice_index}:a]aresample=48000,volume={voice_gain},apad[voice_mix]"
-            )
+            filters.append("[voice_pre]apad[voice_mix]")
         mix_labels.append("[voice_mix]")
 
     if music_index is not None:
-        filters.append(f"[{music_index}:a]aresample=48000,volume={music_level}[music_raw]")
+        filters.append(_build_audio_track_filter(
+            music_index, "music_raw", music_level,
+            music_trim_start_seconds, music_trim_end_seconds,
+            music_fade_in_seconds, music_fade_out_start_seconds,
+            music_fade_out_seconds, "Music"
+        ))
         if voice_index is not None:
             filters.append(
                 "[music_raw][voice_sc]sidechaincompress="
@@ -146,12 +233,16 @@ def build_audio_mux_command(ffmpeg, silent_video, output_path,
         mix_labels.append("[music_mix]")
 
     for cue_index, (effect, input_index) in enumerate(zip(effects, effect_inputs)):
+        raw_label = f"sfx_raw_{cue_index}"
+        filters.append(_build_audio_track_filter(
+            input_index, raw_label, effect["gain"],
+            effect["trim_start_seconds"], effect["trim_end_seconds"],
+            effect["fade_in_seconds"], effect["fade_out_start_seconds"],
+            effect["fade_out_seconds"], f"Sound-effect cue {cue_index + 1}"
+        ))
         delay_ms = int(round(effect["start_seconds"] * 1000))
         label = f"sfx_{cue_index}"
-        filters.append(
-            f"[{input_index}:a]aresample=48000,volume={effect['gain']},"
-            f"adelay={delay_ms}:all=1,apad[{label}]"
-        )
+        filters.append(f"[{raw_label}]adelay={delay_ms}:all=1,apad[{label}]")
         mix_labels.append(f"[{label}]")
 
     if len(mix_labels) == 1:
@@ -186,8 +277,18 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
                    work_dir, progress_callback=None, runner=subprocess.run,
                    voiceover_path=None, music_path=None,
                    voiceover_gain=1.0, music_gain=0.18,
-                   sound_effects=None):
-    """Normalize and join clips, then optionally mix narration and background music."""
+                   sound_effects=None,
+                   voiceover_trim_start_seconds=0,
+                   voiceover_trim_end_seconds=0,
+                   voiceover_fade_in_seconds=0,
+                   voiceover_fade_out_start_seconds=0,
+                   voiceover_fade_out_seconds=0,
+                   music_trim_start_seconds=0,
+                   music_trim_end_seconds=0,
+                   music_fade_in_seconds=0,
+                   music_fade_out_start_seconds=0,
+                   music_fade_out_seconds=0):
+    """Normalize and join clips, then mix optional audio with per-track trim/fade controls."""
     sources = [Path(path) for path in source_paths]
     if not sources:
         raise ValueError("Choose at least one completed scene clip.")
@@ -203,8 +304,18 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
     effects = _validated_sound_effects(sound_effects)
     if voiceover_path:
         _gain_text(voiceover_gain, 2.0, "Voiceover")
+        _audio_processing_values(
+            voiceover_trim_start_seconds, voiceover_trim_end_seconds,
+            voiceover_fade_in_seconds, voiceover_fade_out_start_seconds,
+            voiceover_fade_out_seconds, "Voiceover"
+        )
     if music_path:
         _gain_text(music_gain, 1.0, "Music")
+        _audio_processing_values(
+            music_trim_start_seconds, music_trim_end_seconds,
+            music_fade_in_seconds, music_fade_out_start_seconds,
+            music_fade_out_seconds, "Music"
+        )
 
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -244,13 +355,23 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
 
     if has_audio:
         if progress_callback:
-            progress_callback("Mixing voiceover and background music…")
+            progress_callback("Trimming and mixing narration, music and sound effects…")
         _run(
             build_audio_mux_command(
                 ffmpeg_path, joined_video, destination,
                 voiceover_path=voiceover_path, music_path=music_path,
                 voiceover_gain=voiceover_gain, music_gain=music_gain,
                 sound_effects=effects,
+                voiceover_trim_start_seconds=voiceover_trim_start_seconds,
+                voiceover_trim_end_seconds=voiceover_trim_end_seconds,
+                voiceover_fade_in_seconds=voiceover_fade_in_seconds,
+                voiceover_fade_out_start_seconds=voiceover_fade_out_start_seconds,
+                voiceover_fade_out_seconds=voiceover_fade_out_seconds,
+                music_trim_start_seconds=music_trim_start_seconds,
+                music_trim_end_seconds=music_trim_end_seconds,
+                music_fade_in_seconds=music_fade_in_seconds,
+                music_fade_out_start_seconds=music_fade_out_start_seconds,
+                music_fade_out_seconds=music_fade_out_seconds,
             ),
             timeout=600,
             runner=runner,
