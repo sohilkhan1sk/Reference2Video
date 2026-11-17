@@ -211,6 +211,74 @@ class AssemblyTests(unittest.TestCase):
             self.assertIn("adelay=3250:all=1", graph)
             self.assertTrue(output.is_file())
 
+
+    def test_audio_mux_applies_trim_and_fades_to_all_tracks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            voice = root / "voice.wav"
+            music = root / "music.mp3"
+            sfx = root / "impact.wav"
+            for path in (voice, music, sfx):
+                path.write_bytes(b"audio")
+            command = build_audio_mux_command(
+                "ffmpeg", "joined.mp4", "final.mp4",
+                voiceover_path=voice, music_path=music,
+                voiceover_trim_start_seconds=1.25,
+                voiceover_trim_end_seconds=12,
+                voiceover_fade_in_seconds=0.4,
+                voiceover_fade_out_start_seconds=9,
+                voiceover_fade_out_seconds=1,
+                music_trim_start_seconds=3,
+                music_trim_end_seconds=30,
+                music_fade_in_seconds=2,
+                music_fade_out_start_seconds=24,
+                music_fade_out_seconds=3,
+                sound_effects=[{
+                    "path": sfx, "start_seconds": 5, "gain": 0.8,
+                    "trim_start_seconds": 0.5, "trim_end_seconds": 2.5,
+                    "fade_in_seconds": 0.2, "fade_out_start_seconds": 1.5,
+                    "fade_out_seconds": 0.3,
+                }],
+            )
+            graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("atrim=start=1.25:end=12", graph)
+            self.assertIn("afade=t=in:st=0:d=0.4", graph)
+            self.assertIn("afade=t=out:st=9:d=1", graph)
+            self.assertIn("atrim=start=3:end=30", graph)
+            self.assertIn("afade=t=in:st=0:d=2", graph)
+            self.assertIn("afade=t=out:st=24:d=3", graph)
+            self.assertIn("atrim=start=0.5:end=2.5", graph)
+            self.assertIn("afade=t=out:st=1.5:d=0.3", graph)
+            self.assertIn("adelay=5000:all=1", graph)
+
+    def test_audio_processing_rejects_invalid_trim_and_fade_ranges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            voice = root / "voice.wav"
+            voice.write_bytes(b"voice")
+            with self.assertRaises(ValueError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4",
+                    voiceover_path=voice,
+                    voiceover_trim_start_seconds=5,
+                    voiceover_trim_end_seconds=5,
+                )
+            with self.assertRaises(ValueError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4",
+                    voiceover_path=voice,
+                    voiceover_trim_start_seconds=1,
+                    voiceover_trim_end_seconds=3,
+                    voiceover_fade_in_seconds=1.5,
+                    voiceover_fade_out_seconds=1,
+                )
+            with self.assertRaises(ValueError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4",
+                    voiceover_path=voice,
+                    voiceover_fade_out_start_seconds=3601,
+                )
+
     def test_empty_or_missing_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
