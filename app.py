@@ -651,7 +651,7 @@ def _parse_audio_gain(value, default, maximum, label):
         gain = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} gain must be a number.") from exc
-    if not 0 <= gain <= maximum:
+    if not math.isfinite(gain) or not 0 <= gain <= maximum:
         raise ValueError(f"{label} gain must be between 0 and {maximum}.")
     return round(gain, 3)
 
