@@ -90,7 +90,7 @@ function addSfxCue(){
  const row=document.createElement('div');
  row.className='sfx-cue';
  row.dataset.sfxId=String(id);
- row.innerHTML='<label>SFX FILE<input type="file" data-sfx-file accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,.aiff,audio/*"><small data-sfx-name>No file selected · max 10 MB</small></label><label>START TIME (SECONDS)<input type="number" data-sfx-start min="0" max="900" step="0.1" value="0"></label><label class="sfx-gain">LEVEL <input type="range" data-sfx-gain min="0" max="200" step="5" value="100"><span data-sfx-gain-value>100%</span></label><button type="button" class="secondary sfx-remove">Remove</button>';
+ row.innerHTML='<label>SFX FILE<input type="file" data-sfx-file accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,.aiff,audio/*"><small data-sfx-name>No file selected · max 10 MB</small></label><label>START TIME (SECONDS)<input type="number" data-sfx-start min="0" max="900" step="0.1" value="0"></label><label class="sfx-gain">LEVEL <input type="range" data-sfx-gain min="0" max="200" step="5" value="100"><span data-sfx-gain-value>100%</span></label><details class="sfx-processing"><summary>Trim & fades</summary><div class="processing-grid"><label>TRIM START<input type="number" data-sfx-trim-start min="0" max="3600" step="0.1" value="0"></label><label>TRIM END · 0 = full<input type="number" data-sfx-trim-end min="0" max="3600" step="0.1" value="0"></label><label>FADE IN<input type="number" data-sfx-fade-in min="0" max="10" step="0.1" value="0"></label><label>FADE OUT START<input type="number" data-sfx-fade-out-start min="0" max="3600" step="0.1" value="0"></label><label>FADE OUT LENGTH<input type="number" data-sfx-fade-out min="0" max="10" step="0.1" value="0"></label></div></details><button type="button" class="secondary sfx-remove">Remove</button>';
  const file=row.querySelector('[data-sfx-file]');
  file.addEventListener('change',()=>{row.querySelector('[data-sfx-name]').textContent=file.files?.[0]?.name||'No file selected · max 10 MB';});
  const gain=row.querySelector('[data-sfx-gain]');
@@ -99,6 +99,26 @@ function addSfxCue(){
  list.appendChild(row);
 }
 document.getElementById('addSfxBtn')?.addEventListener('click',addSfxCue);
+function readAudioProcessing(read,label){
+ const values={
+  trim_start_seconds:Number(read('trim_start')||0),
+  trim_end_seconds:Number(read('trim_end')||0),
+  fade_in_seconds:Number(read('fade_in')||0),
+  fade_out_start_seconds:Number(read('fade_out_start')||0),
+  fade_out_seconds:Number(read('fade_out')||0)
+ };
+ const limits={trim_start_seconds:3600,trim_end_seconds:3600,fade_in_seconds:10,fade_out_start_seconds:3600,fade_out_seconds:10};
+ for(const [key,value] of Object.entries(values)){
+  if(!Number.isFinite(value)||value<0||value>limits[key])return {error:label+' '+key.replaceAll('_',' ')+' must be between 0 and '+limits[key]+' seconds.'};
+ }
+ if(values.trim_end_seconds&&values.trim_end_seconds<=values.trim_start_seconds)return {error:label+' trim end must be greater than trim start.'};
+ if(values.trim_end_seconds){
+  const length=values.trim_end_seconds-values.trim_start_seconds;
+  if(values.fade_in_seconds+values.fade_out_seconds>length)return {error:label+' fade durations cannot exceed the trimmed audio length.'};
+  if(values.fade_out_seconds&&values.fade_out_start_seconds+values.fade_out_seconds>length)return {error:label+' fade-out must finish within the trimmed audio segment.'};
+ }
+ return {options:values};
+}
 async function createAssembly(){
  const button=document.getElementById('assembleBtn'),output=document.getElementById('assemblyOutput');
  const token=document.getElementById('videoAccessToken')?.value.trim()||'';
@@ -117,7 +137,9 @@ async function createAssembly(){
   const gain=Number(row.querySelector('[data-sfx-gain]')?.value||100)/100;
   if(!Number.isFinite(start)||start<0||start>900){if(status)status.textContent='SFX start times must be between 0 and 900 seconds.';return;}
   if(!Number.isFinite(gain)||gain<0||gain>2){if(status)status.textContent='SFX levels must be between 0% and 200%.';return;}
-  soundEffects.push({field_name:'sfx_'+row.dataset.sfxId,start_seconds:start,gain});
+  const processing=readAudioProcessing(name=>row.querySelector('[data-sfx-'+name.replaceAll('_','-')+']')?.value,'Sound-effect cue');
+  if(processing.error){if(status)status.textContent=processing.error;return;}
+  soundEffects.push({field_name:'sfx_'+row.dataset.sfxId,start_seconds:start,gain,...processing.options});
  }
  if(soundEffects.length>6){if(status)status.textContent='Use no more than six timed SFX cues.';return;}
  for(const file of [voiceover,music]){
@@ -128,6 +150,11 @@ async function createAssembly(){
  if(totalBytes>48*1024*1024){if(status)status.textContent='Keep all audio uploads together under 48 MB (the server request limit is 50 MB).';return;}
  const voiceoverGain=Number(document.getElementById('voiceoverGain')?.value||100)/100;
  const musicGain=Number(document.getElementById('musicGain')?.value||18)/100;
+ const fieldSuffix={trim_start:'TrimStart',trim_end:'TrimEnd',fade_in:'FadeIn',fade_out_start:'FadeOutStart',fade_out:'FadeOut'};
+ const voiceoverProcessing=readAudioProcessing(name=>document.getElementById('voiceover'+fieldSuffix[name])?.value,'Voiceover');
+ const musicProcessing=readAudioProcessing(name=>document.getElementById('music'+fieldSuffix[name])?.value,'Music');
+ if(voiceoverProcessing.error){if(status)status.textContent=voiceoverProcessing.error;return;}
+ if(musicProcessing.error){if(status)status.textContent=musicProcessing.error;return;}
  const tracks=[voiceover?'voiceover':null,music?'background music':null,soundEffects.length?(soundEffects.length+' timed SFX cue(s)'):null].filter(Boolean);
  const trackSummary=tracks.length?tracks.join(' + '):'silent audio';
  if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4 with '+trackSummary+'? Voiceover/music start at 00:00; each SFX cue starts at its selected timestamp. FFmpeg uses the server and does not call a paid AI provider.'))return;
@@ -140,6 +167,9 @@ async function createAssembly(){
   form.append('aspect_ratio',aspect);
   form.append('voiceover_gain',String(voiceoverGain));
   form.append('music_gain',String(musicGain));
+  for(const [prefix,processing] of [['voiceover',voiceoverProcessing.options],['music',musicProcessing.options]]){
+   for(const [key,value] of Object.entries(processing))form.append(prefix+'_'+key,String(value));
+  }
   form.append('sound_effects',JSON.stringify(soundEffects));
   if(voiceover)form.append('voiceover',voiceover);
   if(music)form.append('music',music);
