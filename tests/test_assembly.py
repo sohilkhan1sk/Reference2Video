@@ -251,6 +251,16 @@ class AssemblyTests(unittest.TestCase):
             self.assertIn("afade=t=out:st=1.5:d=0.3", graph)
             self.assertIn("adelay=5000:all=1", graph)
 
+    def test_audio_gain_rejects_nan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            voice = Path(tmp) / "voice.wav"
+            voice.write_bytes(b"voice")
+            with self.assertRaises(ValueError):
+                build_audio_mux_command(
+                    "ffmpeg", "joined.mp4", "final.mp4",
+                    voiceover_path=voice, voiceover_gain=float("nan"),
+                )
+
     def test_audio_processing_rejects_invalid_trim_and_fade_ranges(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
