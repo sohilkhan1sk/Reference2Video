@@ -59,7 +59,7 @@ def _gain_text(value, maximum, label):
         number = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} gain must be a number.") from exc
-    if not 0 <= number <= maximum:
+    if not math.isfinite(number) or not 0 <= number <= maximum:
         raise ValueError(f"{label} gain must be between 0 and {maximum}.")
     return f"{number:.3f}".rstrip("0").rstrip(".") or "0"
 
