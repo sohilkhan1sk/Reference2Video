@@ -59,6 +59,7 @@ if(!box)return;
 if(!assemblyQueue.length){
 box.innerHTML='<p class="assembly-empty">No clips selected yet. Load history and add completed clips above.</p>';
 if(button)button.disabled=true;
+renderAudioTimeline();
 return;
 }
 box.innerHTML=assemblyQueue.map((jobId,index)=>{
@@ -70,6 +71,7 @@ box.querySelectorAll('.queue-up').forEach(button=>button.addEventListener('click
 box.querySelectorAll('.queue-down').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),1)));
 box.querySelectorAll('.queue-remove').forEach(button=>button.addEventListener('click',()=>{assemblyQueue.splice(Number(button.dataset.index),1);renderAssemblyQueue();}));
 if(button)button.disabled=false;
+renderAudioTimeline();
 }
 function moveAssemblyItem(index,delta){
 const target=index+delta;
@@ -77,6 +79,147 @@ if(target<0||target>=assemblyQueue.length)return;
 [ assemblyQueue[index],assemblyQueue[target] ]=[ assemblyQueue[target],assemblyQueue[index] ];
 renderAssemblyQueue();
 }
+
+const audioDurationCache = new WeakMap();
+let audioTimelineRevision = 0;
+
+function readLocalAudioDuration(file){
+ if(!file)return Promise.resolve(null);
+ if(audioDurationCache.has(file))return audioDurationCache.get(file);
+ const promise=new Promise(resolve=>{
+  const audio=document.createElement('audio');
+  const url=URL.createObjectURL(file);
+  let finished=false;
+  const finish=value=>{
+   if(finished)return;
+   finished=true;
+   audio.removeAttribute('src');
+   audio.load();
+   URL.revokeObjectURL(url);
+   resolve(Number.isFinite(value)&&value>0?value:null);
+  };
+  audio.preload='metadata';
+  audio.addEventListener('loadedmetadata',()=>finish(audio.duration),{once:true});
+  audio.addEventListener('error',()=>finish(null),{once:true});
+  audio.src=url;
+  audio.load();
+  window.setTimeout(()=>finish(null),8000);
+ });
+ audioDurationCache.set(file,promise);
+ return promise;
+}
+
+function timelineAudioOptions(prefix){
+ const cap=name=>name.split('_').map(part=>part.charAt(0).toUpperCase()+part.slice(1)).join('');
+ const read=name=>Number(document.getElementById(prefix+cap(name))?.value||0);
+ return {
+  trimStartSeconds:read('trim_start'),
+  trimEndSeconds:read('trim_end'),
+  fadeInSeconds:read('fade_in'),
+  fadeOutStartSeconds:read('fade_out_start'),
+  fadeOutSeconds:read('fade_out')
+ };
+}
+
+async function renderAudioTimeline(){
+ const root=document.getElementById('audioTimeline');
+ if(!root)return;
+ const revision=++audioTimelineRevision;
+ const totalDuration=assemblyQueue.reduce((sum,id)=>{
+  const duration=Number(recentJobsById[id]?.duration);
+  return sum+(Number.isFinite(duration)&&duration>0?duration:0);
+ },0);
+ if(!assemblyQueue.length){
+  root.innerHTML='<div class="audio-timeline-empty">Add completed clips from history to build the timeline preview.</div>';
+  return;
+ }
+ if(totalDuration<=0){
+  root.innerHTML='<div class="audio-timeline-empty">Clip durations are unavailable. Reload generation history before previewing the timeline.</div>';
+  return;
+ }
+
+ const voiceFile=document.getElementById('voiceoverFile')?.files?.[0]||null;
+ const musicFile=document.getElementById('musicFile')?.files?.[0]||null;
+ const specs=[
+  {id:'voiceover',kind:'voiceover',label:'VOICEOVER',file:voiceFile,loop:false,...timelineAudioOptions('voiceover')},
+  {id:'music',kind:'music',label:'MUSIC',file:musicFile,loop:true,...timelineAudioOptions('music')}
+ ];
+ let cueIndex=0;
+ for(const row of document.querySelectorAll('.sfx-cue')){
+  cueIndex++;
+  const file=row.querySelector('[data-sfx-file]')?.files?.[0]||null;
+  const read=name=>Number(row.querySelector('[data-sfx-'+name.replaceAll('_','-')+']')?.value||0);
+  specs.push({
+   id:'sfx-'+cueIndex,kind:'sfx',label:'SFX '+String(cueIndex).padStart(2,'0'),
+   file,loop:false,startSeconds:read('start'),
+   trimStartSeconds:read('trim_start'),trimEndSeconds:read('trim_end'),
+   fadeInSeconds:read('fade_in'),fadeOutStartSeconds:read('fade_out_start'),
+   fadeOutSeconds:read('fade_out')
+  });
+ }
+
+ root.innerHTML='<div class="audio-timeline-loading">Reading selected audio metadata and drawing timeline…</div>';
+ const durations=await Promise.all(specs.map(spec=>readLocalAudioDuration(spec.file)));
+ if(revision!==audioTimelineRevision)return;
+ const tracks=specs.map((spec,index)=>({
+  id:spec.id,kind:spec.kind,label:spec.label,
+  fileName:spec.file?.name||'',hasFile:Boolean(spec.file),
+  sourceDurationSeconds:durations[index],loop:spec.loop,
+  startSeconds:spec.startSeconds||0,
+  trimStartSeconds:spec.trimStartSeconds||0,
+  trimEndSeconds:spec.trimEndSeconds||0,
+  fadeInSeconds:spec.fadeInSeconds||0,
+  fadeOutStartSeconds:spec.fadeOutStartSeconds||0,
+  fadeOutSeconds:spec.fadeOutSeconds||0
+ }));
+ const model=window.Reference2VideoTimeline.buildTimelineModel({durationSeconds:totalDuration,tracks});
+ const time=window.Reference2VideoTimeline.formatTime;
+ const tickHtml=model.ticks.map((tick,index)=>{
+  const percent=tick/totalDuration*100;
+  const edge=index===0?'tick-start':(tick===totalDuration?'tick-end':'');
+  return '<span class="audio-timeline-tick '+edge+'" style="left:'+percent+'%">'+time(tick)+'</span>';
+ }).join('');
+ const laneHtml=model.lanes.map(lane=>{
+  const trackClass='audio-timeline-track track-'+lane.kind;
+  let bar='';
+  if(lane.hasFile&&lane.widthPercent>0){
+   bar='<div class="audio-timeline-bar '+(lane.unknownDuration?'bar-unknown':'')+'" style="left:'+lane.startPercent+'%;width:'+lane.widthPercent+'%" title="'+esc(lane.fileName)+'">'+
+    '<span class="audio-timeline-fade fade-in" style="width:'+lane.fadeInPercent+'%"></span>'+
+    '<span class="audio-timeline-fade fade-out" style="left:'+lane.fadeOutLeftPercent+'%;width:'+lane.fadeOutWidthPercent+'%"></span>'+
+   '</div>';
+  }else if(lane.hasFile&&lane.unknownDuration){
+   bar='<div class="audio-timeline-marker" style="left:'+lane.startPercent+'%" title="Audio duration unavailable"></div>';
+  }
+  const meta=!lane.hasFile?'No file selected':
+   (lane.unknownDuration?'Duration unavailable · marker only':
+    (lane.loop?'Loops to export end':time(lane.visibleDurationSeconds)+' on timeline'));
+  const warning=lane.outOfRange?' · starts after export end':'';
+  return '<div class="audio-timeline-lane"><div class="audio-timeline-label"><b>'+esc(lane.label)+'</b><small title="'+esc(lane.fileName)+'">'+esc(lane.fileName||meta)+'</small></div><div class="'+trackClass+'" style="--playhead:0%">'+
+   (lane.hasFile&&lane.widthPercent>0?bar:'<span class="audio-timeline-track-empty">'+(lane.hasFile?'No visible segment':'No file selected')+'</span>')+
+   '<small class="audio-timeline-track-meta">'+esc(meta+warning)+'</small></div></div>';
+ }).join('');
+ root.innerHTML=
+  '<div class="audio-timeline-head"><div><b>AUDIO TIMELINE PREVIEW</b><p>Clip order sets the export length. Audio files are inspected locally in your browser; they are uploaded only when you start assembly.</p></div><strong id="audioTimelineReadout">00:00 / '+time(totalDuration)+'</strong></div>'+
+  '<div class="audio-timeline-scroll"><div class="audio-timeline-canvas">'+
+   '<div class="audio-timeline-ruler-row"><div class="audio-timeline-label ruler-label">TRACK</div><div class="audio-timeline-ruler-track">'+tickHtml+'</div></div>'+
+   '<div class="audio-timeline-lanes">'+laneHtml+'</div>'+
+  '</div></div>'+
+  '<div class="audio-timeline-scrub"><label for="audioTimelineSeek">PLAYHEAD</label><input id="audioTimelineSeek" type="range" min="0" max="'+totalDuration+'" step="0.1" value="0"><span id="audioTimelinePosition">00:00</span></div>'+
+  '<small class="audio-timeline-footnote">Placement preview only — this view does not play audio or display a waveform. Trim and fade positions update as you edit the controls above.</small>';
+ const seek=root.querySelector('#audioTimelineSeek');
+ const readout=root.querySelector('#audioTimelineReadout');
+ const position=root.querySelector('#audioTimelinePosition');
+ const updatePlayhead=()=>{
+  const seconds=Number(seek.value)||0;
+  const percent=seconds/totalDuration*100;
+  root.querySelectorAll('.audio-timeline-track').forEach(track=>track.style.setProperty('--playhead',percent+'%'));
+  if(readout)readout.textContent=time(seconds)+' / '+time(totalDuration);
+  if(position)position.textContent=time(seconds);
+ };
+ seek.addEventListener('input',updatePlayhead);
+ updatePlayhead();
+}
+
 function addSfxCue(){
  const list=document.getElementById('sfxCueList');
  if(!list)return;
@@ -95,10 +238,14 @@ function addSfxCue(){
  file.addEventListener('change',()=>{row.querySelector('[data-sfx-name]').textContent=file.files?.[0]?.name||'No file selected · max 10 MB';});
  const gain=row.querySelector('[data-sfx-gain]');
  gain.addEventListener('input',()=>{row.querySelector('[data-sfx-gain-value]').textContent=gain.value+'%';});
- row.querySelector('.sfx-remove').addEventListener('click',()=>row.remove());
+ row.querySelector('.sfx-remove').addEventListener('click',()=>{row.remove();renderAudioTimeline();});
  list.appendChild(row);
+ renderAudioTimeline();
 }
 document.getElementById('addSfxBtn')?.addEventListener('click',addSfxCue);
+const audioEditor=document.querySelector('.assembly-panel');
+audioEditor?.addEventListener('input',event=>{if(event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
+audioEditor?.addEventListener('change',event=>{if(event.target.matches('input[type="file"]')||event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
 function readAudioProcessing(read,label){
  const values={
   trim_start_seconds:Number(read('trim_start')||0),
@@ -261,4 +408,5 @@ if(storageEl)storageEl.textContent='Could not check MP4 storage readiness.';
 }
 }
 refreshProviderStatus();
+renderAudioTimeline();
 document.getElementById('exportBtn').onclick=()=>{if(!currentData)return;const copy=JSON.parse(JSON.stringify(currentData)),idea=copy.ideas?.[selectedIdea];if(!idea)return;idea.scenes.forEach((s,i)=>document.querySelectorAll('.scene')[i]?.querySelectorAll('textarea').forEach(t=>s[t.dataset.k]=t.value));copy.selected_idea_storyboard={title:idea.title,scenes:idea.scenes};const a=document.createElement('a'),url=URL.createObjectURL(new Blob([JSON.stringify(copy,null,2)],{type:'application/json'}));a.href=url;a.download='reference2video-storyboard.json';a.click();URL.revokeObjectURL(url);};
