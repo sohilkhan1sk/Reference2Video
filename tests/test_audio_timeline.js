@@ -57,7 +57,7 @@ test("SFX starts at its cue timestamp and uses its trimmed source length", () =>
     }]
   });
   const lane = model.lanes[0];
-  assert.equal(lane.startPercent, 100 / 6);
+  assert.ok(Math.abs(lane.startPercent - (100 / 6)) < 1e-9);
   assert.equal(lane.visibleDurationSeconds, 3);
   assert.equal(lane.widthPercent, 10);
   assert.ok(Math.abs(lane.fadeInPercent - 100 / 6) < 1e-9);
