@@ -113,12 +113,12 @@ def _build_audio_track_filter(input_index, output_label, gain,
         chain[0] += f":end={end}"
     chain.extend(["asetpts=PTS-STARTPTS", "aresample=48000"])
     if values["fade_in_seconds"]:
-        chain.append(f"afade=t=in:st=0:d={values['fade_in_seconds']}")
+        fade_in = f"{values['fade_in_seconds']:.3f}".rstrip("0").rstrip(".") or "0"
+        chain.append(f"afade=t=in:st=0:d={fade_in}")
     if values["fade_out_seconds"]:
-        chain.append(
-            f"afade=t=out:st={values['fade_out_start_seconds']}:"
-            f"d={values['fade_out_seconds']}"
-        )
+        fade_out_start = f"{values['fade_out_start_seconds']:.3f}".rstrip("0").rstrip(".") or "0"
+        fade_out = f"{values['fade_out_seconds']:.3f}".rstrip("0").rstrip(".") or "0"
+        chain.append(f"afade=t=out:st={fade_out_start}:d={fade_out}")
     chain.append(f"volume={gain}")
     return f"[{input_index}:a]{','.join(chain)}[{output_label}]"
 
