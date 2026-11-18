@@ -65,3 +65,44 @@
 @media(max-width:720px){.sfx-processing .processing-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .processing-help{display:block;margin:0 0 12px;color:#9bb4b5;font-size:10px;line-height:1.5}
+
+
+.audio-timeline-panel{margin:14px 0;padding:13px;border:1px solid #31555a;border-radius:10px;background:#0a1820}
+.audio-timeline-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.audio-timeline-head b{color:#d8f3ee;font-size:11px;letter-spacing:.8px}
+.audio-timeline-head p{margin:5px 0 0;color:#9bb4b5;font-size:10px;line-height:1.5}
+.audio-timeline-head strong{flex:none;color:#73d9c7;font-size:12px;font-variant-numeric:tabular-nums}
+.audio-timeline-loading,.audio-timeline-empty{padding:16px;border:1px dashed #42636a;border-radius:8px;color:#9bb4b5;font-size:11px;line-height:1.5}
+.audio-timeline-scroll{overflow-x:auto;padding-bottom:5px}
+.audio-timeline-canvas{min-width:540px}
+.audio-timeline-ruler-row,.audio-timeline-lane{display:grid;grid-template-columns:112px minmax(0,1fr);gap:10px;align-items:center}
+.audio-timeline-ruler-row{margin-bottom:5px}
+.audio-timeline-ruler-track{position:relative;height:25px;border-bottom:1px solid #42636a}
+.audio-timeline-tick{position:absolute;bottom:4px;transform:translateX(-50%);color:#8ba8aa;font-size:9px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.audio-timeline-tick:after{content:"";position:absolute;left:50%;top:14px;height:5px;border-left:1px solid #42636a}
+.audio-timeline-tick.tick-start{transform:none}
+.audio-timeline-tick.tick-start:after{left:0}
+.audio-timeline-tick.tick-end{transform:translateX(-100%)}
+.audio-timeline-tick.tick-end:after{left:100%}
+.audio-timeline-label{min-width:0;display:flex;flex-direction:column;gap:3px}
+.audio-timeline-label b{color:#cfe7e2;font-size:9px;letter-spacing:.6px}
+.audio-timeline-label small{overflow:hidden;color:#91abad;font-size:9px;text-overflow:ellipsis;white-space:nowrap}
+.audio-timeline-lanes{display:grid;gap:8px}
+.audio-timeline-track{position:relative;height:34px;overflow:hidden;border:1px solid #28434a;border-radius:6px;background-color:#10232a;background-image:linear-gradient(to right,rgba(126,165,166,.13) 1px,transparent 1px);background-size:10% 100%}
+.audio-timeline-track:after{content:"";position:absolute;z-index:3;top:0;bottom:0;left:var(--playhead,0%);width:1px;background:#f4d47b;box-shadow:0 0 5px rgba(244,212,123,.6);pointer-events:none}
+.audio-timeline-track-empty{position:absolute;left:8px;top:10px;color:#668386;font-size:9px}
+.audio-timeline-track-meta{position:absolute;right:5px;bottom:3px;color:rgba(220,241,235,.72);font-size:8px;pointer-events:none}
+.audio-timeline-bar{position:absolute;top:4px;bottom:4px;min-width:2px;overflow:hidden;border:1px solid rgba(142,230,211,.75);border-radius:4px;background:rgba(69,166,147,.75)}
+.audio-timeline-bar.bar-unknown{border-style:dashed;background:rgba(69,166,147,.2)}
+.track-music .audio-timeline-bar{border-color:rgba(139,171,245,.8);background:repeating-linear-gradient(135deg,rgba(95,130,205,.65) 0 6px,rgba(95,130,205,.25) 6px 12px)}
+.track-sfx .audio-timeline-bar{border-color:rgba(238,180,111,.8);background:rgba(185,125,59,.7)}
+.audio-timeline-fade{position:absolute;top:0;bottom:0;background:rgba(239,247,238,.4);pointer-events:none}
+.audio-timeline-fade.fade-in{left:0;background:linear-gradient(90deg,rgba(10,24,32,.8),rgba(239,247,238,.18))}
+.audio-timeline-fade.fade-out{background:linear-gradient(90deg,rgba(239,247,238,.18),rgba(10,24,32,.85))}
+.audio-timeline-marker{position:absolute;top:4px;bottom:4px;width:3px;border-left:2px dashed #e9bd77}
+.audio-timeline-scrub{display:grid;grid-template-columns:auto 1fr 48px;align-items:center;gap:10px;margin-top:12px}
+.audio-timeline-scrub label{color:#9bb4b5;font-size:9px;letter-spacing:.7px}
+.audio-timeline-scrub input{width:100%;accent-color:#e7c875}
+.audio-timeline-scrub span{color:#d8f3ee;text-align:right;font-size:10px;font-variant-numeric:tabular-nums}
+.audio-timeline-footnote{display:block;margin-top:9px;color:#91abad;font-size:9px;line-height:1.5}
+@media(max-width:720px){.audio-timeline-head{flex-direction:column}.audio-timeline-scrub{grid-template-columns:auto 1fr 44px}}
