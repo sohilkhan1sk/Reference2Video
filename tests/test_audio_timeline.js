@@ -1,6 +1,7 @@
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const { buildTimelineModel, formatTime } = require("../static/audio_timeline.js");
+import test from "node:test";
+import assert from "node:assert/strict";
+import "../static/audio_timeline.js";
+const { buildTimelineModel, formatTime } = globalThis.Reference2VideoTimeline;
 
 test("time ruler chooses readable intervals and includes the exact end", () => {
   const model = buildTimelineModel({ durationSeconds: 65, tracks: [] });
