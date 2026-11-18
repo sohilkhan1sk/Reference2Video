@@ -89,10 +89,11 @@ function readLocalAudioDuration(file){
  const promise=new Promise(resolve=>{
   const audio=document.createElement('audio');
   const url=URL.createObjectURL(file);
-  let finished=false;
+  let finished=false,timeoutId=null;
   const finish=value=>{
    if(finished)return;
    finished=true;
+   if(timeoutId!==null)window.clearTimeout(timeoutId);
    audio.removeAttribute('src');
    audio.load();
    URL.revokeObjectURL(url);
@@ -103,7 +104,7 @@ function readLocalAudioDuration(file){
   audio.addEventListener('error',()=>finish(null),{once:true});
   audio.src=url;
   audio.load();
-  window.setTimeout(()=>finish(null),8000);
+  timeoutId=window.setTimeout(()=>finish(null),8000);
  });
  audioDurationCache.set(file,promise);
  return promise;
@@ -179,6 +180,7 @@ async function renderAudioTimeline(){
   const edge=index===0?'tick-start':(tick===totalDuration?'tick-end':'');
   return '<span class="audio-timeline-tick '+edge+'" style="left:'+percent+'%">'+time(tick)+'</span>';
  }).join('');
+ const gridHtml=model.ticks.map(tick=>'<span class="audio-timeline-gridline" style="left:'+(tick/totalDuration*100)+'%"></span>').join('');
  const laneHtml=model.lanes.map(lane=>{
   const trackClass='audio-timeline-track track-'+lane.kind;
   let bar='';
@@ -194,7 +196,7 @@ async function renderAudioTimeline(){
    (lane.unknownDuration?'Duration unavailable · marker only':
     (lane.loop?'Loops to export end':time(lane.visibleDurationSeconds)+' on timeline'));
   const warning=lane.outOfRange?' · starts after export end':'';
-  return '<div class="audio-timeline-lane"><div class="audio-timeline-label"><b>'+esc(lane.label)+'</b><small title="'+esc(lane.fileName)+'">'+esc(lane.fileName||meta)+'</small></div><div class="'+trackClass+'" style="--playhead:0%">'+
+  return '<div class="audio-timeline-lane"><div class="audio-timeline-label"><b>'+esc(lane.label)+'</b><small title="'+esc(lane.fileName)+'">'+esc(lane.fileName||meta)+'</small></div><div class="'+trackClass+'" style="--playhead:0%">'+gridHtml+
    (lane.hasFile&&lane.widthPercent>0?bar:'<span class="audio-timeline-track-empty">'+(lane.hasFile?'No visible segment':'No file selected')+'</span>')+
    '<small class="audio-timeline-track-meta">'+esc(meta+warning)+'</small></div></div>';
  }).join('');
