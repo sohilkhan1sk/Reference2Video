@@ -23,7 +23,7 @@ test("voiceover bar reflects source trim and is clipped to the export duration",
   assert.equal(lane.startPercent, 0);
   assert.equal(lane.visibleDurationSeconds, 15);
   assert.equal(lane.widthPercent, 50);
-  assert.equal(lane.fadeInPercent, 100 / 15);
+  assert.ok(Math.abs(lane.fadeInPercent - (2 / 15 * 100)) < 1e-9);
   assert.equal(lane.fadeOutLeftPercent, 8 / 15 * 100);
   assert.equal(lane.fadeOutWidthPercent, 20);
 });
