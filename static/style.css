@@ -88,7 +88,8 @@
 .audio-timeline-label b{color:#cfe7e2;font-size:9px;letter-spacing:.6px}
 .audio-timeline-label small{overflow:hidden;color:#91abad;font-size:9px;text-overflow:ellipsis;white-space:nowrap}
 .audio-timeline-lanes{display:grid;gap:8px}
-.audio-timeline-track{position:relative;height:34px;overflow:hidden;border:1px solid #28434a;border-radius:6px;background-color:#10232a;background-image:linear-gradient(to right,rgba(126,165,166,.13) 1px,transparent 1px);background-size:10% 100%}
+.audio-timeline-track{position:relative;height:34px;overflow:hidden;border:1px solid #28434a;border-radius:6px;background-color:#10232a}
+.audio-timeline-gridline{position:absolute;z-index:0;top:0;bottom:0;border-left:1px solid rgba(126,165,166,.13);pointer-events:none}
 .audio-timeline-track:after{content:"";position:absolute;z-index:3;top:0;bottom:0;left:var(--playhead,0%);width:1px;background:#f4d47b;box-shadow:0 0 5px rgba(244,212,123,.6);pointer-events:none}
 .audio-timeline-track-empty{position:absolute;left:8px;top:10px;color:#668386;font-size:9px}
 .audio-timeline-track-meta{position:absolute;right:5px;bottom:3px;color:rgba(220,241,235,.72);font-size:8px;pointer-events:none}
