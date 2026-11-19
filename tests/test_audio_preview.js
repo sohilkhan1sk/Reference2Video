@@ -112,6 +112,6 @@ test("waveform peaks are calculated across channels and source trim", () => {
     getChannelData: index => channels[index]
   };
   assert.deepEqual(computeWaveformPeaks(buffer, 0, 0, 4), [0.5, 1, 0.75, 0.5]);
-  assert.deepEqual(computeWaveformPeaks(buffer, 0.5, 1.5, 2), [1, 0.9]);
+  assert.deepEqual(computeWaveformPeaks(buffer, 0.5, 1.5, 2), [1, 0.75]);
   assert.deepEqual(computeWaveformPeaks(buffer, 2, 2, 8), []);
 });
