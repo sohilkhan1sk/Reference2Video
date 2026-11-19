@@ -81,7 +81,21 @@ renderAssemblyQueue();
 }
 
 const audioDurationCache = new WeakMap();
+const audioBufferCache = new WeakMap();
 let audioTimelineRevision = 0;
+let audioPreviewContext = null;
+let audioPreviewState = null;
+let audioTimelinePlayheadSeconds = 0;
+
+function getAudioPreviewContext(){
+ const AudioContextClass=window.AudioContext||window.webkitAudioContext;
+ if(!AudioContextClass)return null;
+ if(!audioPreviewContext){
+  try{audioPreviewContext=new AudioContextClass();}
+  catch(_){return null;}
+ }
+ return audioPreviewContext;
+}
 
 function readLocalAudioDuration(file){
  if(!file)return Promise.resolve(null);
@@ -110,6 +124,21 @@ function readLocalAudioDuration(file){
  return promise;
 }
 
+function decodeLocalAudioBuffer(file){
+ if(!file)return Promise.resolve(null);
+ if(audioBufferCache.has(file))return audioBufferCache.get(file);
+ const promise=(async()=>{
+  const context=getAudioPreviewContext();
+  if(!context||typeof file.arrayBuffer!=='function')return null;
+  try{
+   const bytes=await file.arrayBuffer();
+   return await context.decodeAudioData(bytes.slice(0));
+  }catch(_){return null;}
+ })();
+ audioBufferCache.set(file,promise);
+ return promise;
+}
+
 function timelineAudioOptions(prefix){
  const cap=name=>name.split('_').map(part=>part.charAt(0).toUpperCase()+part.slice(1)).join('');
  const read=name=>Number(document.getElementById(prefix+cap(name))?.value||0);
@@ -122,9 +151,190 @@ function timelineAudioOptions(prefix){
  };
 }
 
+function stopAudioPreview(preservePosition=true){
+ const state=audioPreviewState;
+ if(!state)return;
+ if(preservePosition&&state.context&&state.seek){
+  const seconds=state.startTimelineSeconds+Math.max(0,state.context.currentTime-state.startContextTime);
+  audioTimelinePlayheadSeconds=Math.min(state.durationSeconds,seconds);
+  state.seek.value=String(audioTimelinePlayheadSeconds);
+  if(state.updatePlayhead)state.updatePlayhead();
+ }
+ if(state.rafId)window.cancelAnimationFrame(state.rafId);
+ (state.sources||[]).forEach(source=>{
+  try{source.stop();}catch(_){}
+  try{source.disconnect();}catch(_){}
+ });
+ try{state.master?.disconnect();}catch(_){}
+ audioPreviewState=null;
+ const play=document.getElementById('audioPreviewPlay');
+ const stop=document.getElementById('audioPreviewStop');
+ if(play){play.disabled=false;play.textContent='▶ Play from playhead';}
+ if(stop)stop.disabled=true;
+}
+
+function drawAudioWaveform(canvas,buffer,spec,lane){
+ if(!canvas||!buffer||!window.Reference2VideoAudioPreview)return;
+ const peaks=window.Reference2VideoAudioPreview.computeWaveformPeaks(
+  buffer,spec.trimStartSeconds,spec.trimEndSeconds,220
+ );
+ if(!peaks.length)return;
+ const rect=canvas.getBoundingClientRect();
+ if(!rect.width||!rect.height)return;
+ const ratio=Math.min(2,window.devicePixelRatio||1);
+ const width=Math.max(1,Math.round(rect.width*ratio));
+ const height=Math.max(1,Math.round(rect.height*ratio));
+ canvas.width=width;
+ canvas.height=height;
+ const context=canvas.getContext('2d');
+ if(!context)return;
+ context.clearRect(0,0,width,height);
+ context.strokeStyle=spec.kind==='music'?'rgba(190,207,255,.9)':(spec.kind==='sfx'?'rgba(255,220,169,.95)':'rgba(190,255,238,.95)');
+ context.lineWidth=Math.max(1,ratio);
+ context.lineCap='round';
+ const trimEnd=spec.trimEndSeconds>0?Math.min(buffer.duration,spec.trimEndSeconds):buffer.duration;
+ const sourceLength=Math.max(0,trimEnd-spec.trimStartSeconds);
+ const visibleDuration=lane.visibleDurationSeconds||sourceLength;
+ const step=Math.max(1,Math.floor(ratio*2));
+ for(let x=0;x<width;x+=step){
+  let fraction=x/width;
+  if(spec.loop&&sourceLength>0&&visibleDuration>0){
+   const seconds=fraction*visibleDuration;
+   fraction=(seconds%sourceLength)/sourceLength;
+  }
+  const index=Math.min(peaks.length-1,Math.floor(fraction*peaks.length));
+  const amplitude=peaks[index]||0;
+  const half=Math.max(ratio,amplitude*height*.43);
+  const center=height/2;
+  context.beginPath();
+  context.moveTo(x,center-half);
+  context.lineTo(x,center+half);
+  context.stroke();
+ }
+}
+
+function envelopeAt(seconds,fadeIn,fadeOutStart,fadeOut){
+ let value=1;
+ if(fadeIn>0&&seconds<fadeIn)value=Math.max(0,seconds/fadeIn);
+ if(fadeOut>0){
+  const fadeEnd=fadeOutStart+fadeOut;
+  if(seconds>=fadeEnd)return 0;
+  if(seconds>fadeOutStart)value=Math.min(value,Math.max(0,1-(seconds-fadeOutStart)/fadeOut));
+ }
+ return value;
+}
+
+function schedulePreviewGain(parameter,track,when){
+ const base=track.gain;
+ const elapsed=track.elapsedSeconds;
+ const fadeIn=track.fadeInSeconds;
+ const fadeOutStart=track.fadeOutStartSeconds;
+ const fadeOut=track.fadeOutSeconds;
+ parameter.setValueAtTime(base*envelopeAt(elapsed,fadeIn,fadeOutStart,fadeOut),when);
+ const points=[fadeIn,fadeOutStart,fadeOutStart+fadeOut]
+  .filter(value=>Number.isFinite(value)&&value>elapsed+0.00001&&value<=elapsed+track.playbackDurationSeconds+0.001)
+  .sort((a,b)=>a-b);
+ let previous=null;
+ points.forEach(point=>{
+  if(previous!==null&&Math.abs(point-previous)<0.00001)return;
+  parameter.linearRampToValueAtTime(
+   base*envelopeAt(point,fadeIn,fadeOutStart,fadeOut),
+   when+(point-elapsed)
+  );
+  previous=point;
+ });
+}
+
+async function startAudioPreview(durationSeconds,specs,buffers,seek,updatePlayhead,status){
+ stopAudioPreview(false);
+ const context=getAudioPreviewContext();
+ if(!context)throw Error('This browser does not support Web Audio playback. You can still export the tracks with FFmpeg.');
+ await context.resume();
+ const playhead=Math.max(0,Math.min(durationSeconds,Number(seek.value)||0));
+ const tracks=specs.map((spec,index)=>({
+  id:spec.id,kind:spec.kind,hasFile:Boolean(spec.file),
+  sourceDurationSeconds:buffers[index]?.duration||null,
+  startSeconds:spec.startSeconds||0,trimStartSeconds:spec.trimStartSeconds||0,
+  trimEndSeconds:spec.trimEndSeconds||0,loop:spec.loop,
+  fadeInSeconds:spec.fadeInSeconds||0,fadeOutStartSeconds:spec.fadeOutStartSeconds||0,
+  fadeOutSeconds:spec.fadeOutSeconds||0,gain:spec.gain
+ }));
+ const plan=window.Reference2VideoAudioPreview.buildAudioPreviewPlan({
+  durationSeconds,playheadSeconds:playhead,tracks
+ });
+ const playable=plan.tracks.filter(track=>track.shouldPlay&&buffers[track.index]);
+ if(!playable.length)throw Error('No decoded audio remains at this playhead. Move the playhead earlier or choose another audio file.');
+ const master=context.createDynamicsCompressor();
+ master.threshold.value=-4;
+ master.knee.value=4;
+ master.ratio.value=12;
+ master.attack.value=.004;
+ master.release.value=.22;
+ master.connect(context.destination);
+ const sources=[];
+ const baseTime=context.currentTime+.05;
+ try{
+  playable.forEach(track=>{
+   const spec=specs[track.index],buffer=buffers[track.index];
+   const source=context.createBufferSource();
+   const gain=context.createGain();
+   source.buffer=buffer;
+   source.loop=track.loop;
+   if(track.loop){
+    source.loopStart=track.sourceStartSeconds;
+    source.loopEnd=track.sourceEndSeconds;
+   }
+   const when=baseTime+track.startDelaySeconds;
+   schedulePreviewGain(gain.gain,track,when);
+   source.connect(gain);
+   gain.connect(master);
+   if(track.loop){
+    source.start(when,track.sourceOffsetSeconds);
+    source.stop(baseTime+(durationSeconds-playhead)+.1);
+   }else{
+    source.start(when,track.sourceOffsetSeconds,track.playbackDurationSeconds);
+   }
+   sources.push(source);
+  });
+ }catch(error){
+  sources.forEach(source=>{try{source.stop();}catch(_){}});
+  try{master.disconnect();}catch(_){}
+  throw error;
+ }
+ const state={
+  context,sources,master,startContextTime:baseTime,startTimelineSeconds:playhead,
+  durationSeconds,seek,updatePlayhead,rafId:0
+ };
+ audioPreviewState=state;
+ const play=document.getElementById('audioPreviewPlay');
+ const stop=document.getElementById('audioPreviewStop');
+ if(play){play.disabled=true;play.textContent='Playing audio…';}
+ if(stop)stop.disabled=false;
+ if(status)status.textContent='Playing '+playable.length+' synchronized local audio track(s). Preview compression and music ducking may differ from the FFmpeg export.';
+ const tick=()=>{
+  if(audioPreviewState!==state)return;
+  const elapsed=Math.max(0,context.currentTime-state.startContextTime);
+  const current=Math.min(durationSeconds,playhead+elapsed);
+  seek.value=String(current);
+  audioTimelinePlayheadSeconds=current;
+  updatePlayhead();
+  if(current>=durationSeconds){
+   stopAudioPreview(false);
+   seek.value=String(durationSeconds);
+   audioTimelinePlayheadSeconds=durationSeconds;
+   updatePlayhead();
+   if(status)status.textContent='Audio preview reached the end of the selected scene sequence.';
+   return;
+  }
+  state.rafId=window.requestAnimationFrame(tick);
+ };
+ state.rafId=window.requestAnimationFrame(tick);
+}
+
 async function renderAudioTimeline(){
  const root=document.getElementById('audioTimeline');
  if(!root)return;
+ stopAudioPreview();
  const revision=++audioTimelineRevision;
  const totalDuration=assemblyQueue.reduce((sum,id)=>{
   const duration=Number(recentJobsById[id]?.duration);
@@ -142,8 +352,8 @@ async function renderAudioTimeline(){
  const voiceFile=document.getElementById('voiceoverFile')?.files?.[0]||null;
  const musicFile=document.getElementById('musicFile')?.files?.[0]||null;
  const specs=[
-  {id:'voiceover',kind:'voiceover',label:'VOICEOVER',file:voiceFile,loop:false,...timelineAudioOptions('voiceover')},
-  {id:'music',kind:'music',label:'MUSIC',file:musicFile,loop:true,...timelineAudioOptions('music')}
+  {id:'voiceover',kind:'voiceover',label:'VOICEOVER',file:voiceFile,loop:false,startSeconds:0,gain:Number(document.getElementById('voiceoverGain')?.value||100)/100,...timelineAudioOptions('voiceover')},
+  {id:'music',kind:'music',label:'MUSIC',file:musicFile,loop:true,startSeconds:0,gain:Number(document.getElementById('musicGain')?.value||18)/100,...timelineAudioOptions('music')}
  ];
  let cueIndex=0;
  for(const row of document.querySelectorAll('.sfx-cue')){
@@ -152,20 +362,24 @@ async function renderAudioTimeline(){
   const read=name=>Number(row.querySelector('[data-sfx-'+name.replaceAll('_','-')+']')?.value||0);
   specs.push({
    id:'sfx-'+cueIndex,kind:'sfx',label:'SFX '+String(cueIndex).padStart(2,'0'),
-   file,loop:false,startSeconds:read('start'),
+   file,loop:false,startSeconds:read('start'),gain:read('gain')/100,
    trimStartSeconds:read('trim_start'),trimEndSeconds:read('trim_end'),
    fadeInSeconds:read('fade_in'),fadeOutStartSeconds:read('fade_out_start'),
    fadeOutSeconds:read('fade_out')
   });
  }
 
- root.innerHTML='<div class="audio-timeline-loading">Reading selected audio metadata and drawing timeline…</div>';
- const durations=await Promise.all(specs.map(spec=>readLocalAudioDuration(spec.file)));
+ root.innerHTML='<div class="audio-timeline-loading">Reading local audio metadata and waveform previews…</div>';
+ const loaded=await Promise.all(specs.map(async spec=>{
+  const values=await Promise.all([readLocalAudioDuration(spec.file),decodeLocalAudioBuffer(spec.file)]);
+  return {duration:values[1]?.duration||values[0],buffer:values[1]};
+ }));
  if(revision!==audioTimelineRevision)return;
+ const buffers=loaded.map(item=>item.buffer);
  const tracks=specs.map((spec,index)=>({
   id:spec.id,kind:spec.kind,label:spec.label,
   fileName:spec.file?.name||'',hasFile:Boolean(spec.file),
-  sourceDurationSeconds:durations[index],loop:spec.loop,
+  sourceDurationSeconds:loaded[index].duration,loop:spec.loop,
   startSeconds:spec.startSeconds||0,
   trimStartSeconds:spec.trimStartSeconds||0,
   trimEndSeconds:spec.trimEndSeconds||0,
@@ -181,11 +395,12 @@ async function renderAudioTimeline(){
   return '<span class="audio-timeline-tick '+edge+'" style="left:'+percent+'%">'+time(tick)+'</span>';
  }).join('');
  const gridHtml=model.ticks.map(tick=>'<span class="audio-timeline-gridline" style="left:'+(tick/totalDuration*100)+'%"></span>').join('');
- const laneHtml=model.lanes.map(lane=>{
+ const laneHtml=model.lanes.map((lane,index)=>{
   const trackClass='audio-timeline-track track-'+lane.kind;
   let bar='';
   if(lane.hasFile&&lane.widthPercent>0){
-   bar='<div class="audio-timeline-bar '+(lane.unknownDuration?'bar-unknown':'')+'" style="left:'+lane.startPercent+'%;width:'+lane.widthPercent+'%" title="'+esc(lane.fileName)+'">'+
+   const waveform=buffers[index]?'<canvas class="audio-waveform" data-waveform-index="'+index+'" aria-hidden="true"></canvas>':'';
+   bar='<div class="audio-timeline-bar '+(lane.unknownDuration?'bar-unknown':'')+'" style="left:'+lane.startPercent+'%;width:'+lane.widthPercent+'%" title="'+esc(lane.fileName)+'">'+waveform+
     '<span class="audio-timeline-fade fade-in" style="width:'+lane.fadeInPercent+'%"></span>'+
     '<span class="audio-timeline-fade fade-out" style="left:'+lane.fadeOutLeftPercent+'%;width:'+lane.fadeOutWidthPercent+'%"></span>'+
    '</div>';
@@ -200,25 +415,52 @@ async function renderAudioTimeline(){
    (lane.hasFile&&lane.widthPercent>0?bar:'<span class="audio-timeline-track-empty">'+(lane.hasFile?'No visible segment':'No file selected')+'</span>')+
    '<small class="audio-timeline-track-meta">'+esc(meta+warning)+'</small></div></div>';
  }).join('');
+ const decodedCount=loaded.filter(item=>item.buffer).length;
+ const selectedCount=specs.filter(spec=>spec.file).length;
+ const decodeWarning=selectedCount>decodedCount?' '+(selectedCount-decodedCount)+' selected file(s) could not be decoded by this browser; those tracks may still export through FFmpeg.':'';
  root.innerHTML=
-  '<div class="audio-timeline-head"><div><b>AUDIO TIMELINE PREVIEW</b><p>Clip order sets the export length. Audio files are inspected locally in your browser; they are uploaded only when you start assembly.</p></div><strong id="audioTimelineReadout">00:00 / '+time(totalDuration)+'</strong></div>'+
+  '<div class="audio-timeline-head"><div><b>AUDIO TIMELINE PREVIEW</b><p>Waveforms and playback use local browser decoding. Audio files are not uploaded until you start assembly.</p></div><strong id="audioTimelineReadout">00:00 / '+time(totalDuration)+'</strong></div>'+
+  '<div class="audio-preview-controls"><button type="button" class="secondary" id="audioPreviewPlay" '+(decodedCount?'':'disabled')+'>▶ Play from playhead</button><button type="button" class="secondary" id="audioPreviewStop" disabled>Stop</button><span id="audioPreviewStatus">'+(decodedCount?'Ready to preview '+decodedCount+' decoded track(s).':'Choose supported audio files to preview the mix.')+esc(decodeWarning)+'</span></div>'+
   '<div class="audio-timeline-scroll"><div class="audio-timeline-canvas">'+
    '<div class="audio-timeline-ruler-row"><div class="audio-timeline-label ruler-label">TRACK</div><div class="audio-timeline-ruler-track">'+tickHtml+'</div></div>'+
    '<div class="audio-timeline-lanes">'+laneHtml+'</div>'+
   '</div></div>'+
   '<div class="audio-timeline-scrub"><label for="audioTimelineSeek">PLAYHEAD</label><input id="audioTimelineSeek" type="range" min="0" max="'+totalDuration+'" step="0.1" value="0"><span id="audioTimelinePosition">00:00</span></div>'+
-  '<small class="audio-timeline-footnote">Placement preview only — this view does not play audio or display a waveform. Trim and fade positions update as you edit the controls above.</small>';
+  '<small class="audio-timeline-footnote">Waveforms are visual summaries of the selected source trims. Playback synchronizes voiceover, looping music and timed SFX; the final FFmpeg mix remains authoritative for music ducking, limiting and AAC encoding.</small>';
  const seek=root.querySelector('#audioTimelineSeek');
  const readout=root.querySelector('#audioTimelineReadout');
  const position=root.querySelector('#audioTimelinePosition');
  const updatePlayhead=()=>{
   const seconds=Number(seek.value)||0;
+  audioTimelinePlayheadSeconds=seconds;
   const percent=seconds/totalDuration*100;
   root.querySelectorAll('.audio-timeline-track').forEach(track=>track.style.setProperty('--playhead',percent+'%'));
   if(readout)readout.textContent=time(seconds)+' / '+time(totalDuration);
   if(position)position.textContent=time(seconds);
  };
- seek.addEventListener('input',updatePlayhead);
+ seek.value=String(Math.min(totalDuration,audioTimelinePlayheadSeconds));
+ const updateCanvases=()=>{
+  root.querySelectorAll('.audio-waveform').forEach(canvas=>{
+   const index=Number(canvas.dataset.waveformIndex);
+   if(buffers[index])drawAudioWaveform(canvas,buffers[index],specs[index],model.lanes[index]);
+  });
+ };
+ window.requestAnimationFrame(updateCanvases);
+ seek.addEventListener('input',()=>{
+  if(audioPreviewState){stopAudioPreview();const status=root.querySelector('#audioPreviewStatus');if(status)status.textContent='Preview stopped at the new playhead. Press Play to continue from here.';}
+  updatePlayhead();
+ });
+ const play=root.querySelector('#audioPreviewPlay');
+ const stop=root.querySelector('#audioPreviewStop');
+ const status=root.querySelector('#audioPreviewStatus');
+ if(play)play.addEventListener('click',()=>{
+  startAudioPreview(totalDuration,specs,buffers,seek,updatePlayhead,status).catch(error=>{
+   if(status)status.textContent=error.message;
+   stopAudioPreview(false);
+   if(play)play.disabled=!decodedCount;
+  });
+ });
+ if(stop)stop.addEventListener('click',()=>stopAudioPreview());
  updatePlayhead();
 }
 

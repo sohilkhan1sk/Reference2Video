@@ -107,3 +107,12 @@
 .audio-timeline-scrub span{color:#d8f3ee;text-align:right;font-size:10px;font-variant-numeric:tabular-nums}
 .audio-timeline-footnote{display:block;margin-top:9px;color:#91abad;font-size:9px;line-height:1.5}
 @media(max-width:720px){.audio-timeline-head{flex-direction:column}.audio-timeline-scrub{grid-template-columns:auto 1fr 44px}}
+
+
+.audio-preview-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding:10px;border:1px solid #31555a;border-radius:8px;background:#10232a}
+.audio-preview-controls button{padding:8px 12px;font-size:10px}
+.audio-preview-controls button:disabled{opacity:.42;cursor:not-allowed}
+.audio-preview-controls span{flex:1;min-width:180px;color:#9bb4b5;font-size:10px;line-height:1.45}
+.audio-timeline-bar{isolation:isolate}
+.audio-waveform{position:absolute;z-index:1;inset:0;display:block;width:100%;height:100%;opacity:.9;pointer-events:none}
+.audio-timeline-fade{z-index:2}

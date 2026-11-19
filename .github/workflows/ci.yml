@@ -31,5 +31,9 @@ jobs:
         run: node --check static/audio_timeline.js
       - name: Test audio timeline calculations
         run: node --test tests/test_audio_timeline.js
+      - name: Check audio preview module syntax
+        run: node --check static/audio_preview.js
+      - name: Test audio preview planning and waveforms
+        run: node --test tests/test_audio_preview.js
       - name: Check video worker JavaScript syntax
         run: node --check scripts/generate-video.mjs
