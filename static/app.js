@@ -447,7 +447,7 @@ async function renderAudioTimeline(){
  };
  window.requestAnimationFrame(updateCanvases);
  seek.addEventListener('input',()=>{
-  if(audioPreviewState){stopAudioPreview();const status=root.querySelector('#audioPreviewStatus');if(status)status.textContent='Preview stopped at the new playhead. Press Play to continue from here.';}
+  if(audioPreviewState){stopAudioPreview(false);const status=root.querySelector('#audioPreviewStatus');if(status)status.textContent='Preview stopped at the new playhead. Press Play to continue from here.';}
   updatePlayhead();
  });
  const play=root.querySelector('#audioPreviewPlay');
