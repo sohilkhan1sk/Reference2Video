@@ -102,7 +102,7 @@
           if (sample > peak) peak = sample;
         }
       }
-      peaks.push(clamp(peak, 0, 1));
+      peaks.push(Math.round(clamp(peak, 0, 1) * 1000) / 1000);
     }
     return peaks;
   }
