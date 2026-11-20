@@ -56,7 +56,11 @@ if(status)status.textContent='Added clip to the assembly queue. Click Add to ass
 function renderAssemblyQueue(){
 const box=document.getElementById('assemblyQueue'),button=document.getElementById('assembleBtn');
 if(!box)return;
-if(!assemblyQueue.length){\nbox.innerHTML='<p class="assembly-empty">No clips selected yet. Load history and add completed clips above.</p>';\nif(button)button.disabled=true;\nrenderAssemblyVideoPreview();\nrenderAudioTimeline();
+if(!assemblyQueue.length){
+box.innerHTML='<p class="assembly-empty">No clips selected yet. Load history and add completed clips above.</p>';
+if(button)button.disabled=true;
+renderAssemblyVideoPreview();
+renderAudioTimeline();
 return;
 }
 box.innerHTML=assemblyQueue.map((jobId,index)=>{
@@ -161,7 +165,10 @@ function stopAudioPreview(preservePosition=true){
   try{source.disconnect();}catch(_){}
  });
  try{state.master?.disconnect();}catch(_){}
- audioPreviewState=null;\n stopAssemblyVideoSyncLoop();\n pauseAssemblyVideoPreview();\n const play=document.getElementById('audioPreviewPlay');
+ audioPreviewState=null;
+ stopAssemblyVideoSyncLoop();
+ pauseAssemblyVideoPreview();
+ const play=document.getElementById('audioPreviewPlay');
  const stop=document.getElementById('audioPreviewStop');
  if(play){play.disabled=false;play.textContent='▶ Play from playhead';}
  if(stop)stop.disabled=true;
@@ -467,7 +474,9 @@ async function renderAudioTimeline(){
   const seconds=Number(seek.value)||0;
   audioTimelinePlayheadSeconds=seconds;
   const percent=seconds/totalDuration*100;
-  root.querySelectorAll('.audio-timeline-track').forEach(track=>track.style.setProperty('--playhead',percent+'%'));\n   const videoPlayhead=document.getElementById('videoSequencePlayhead');\n   if(videoPlayhead)videoPlayhead.style.left=percent+'%';
+  root.querySelectorAll('.audio-timeline-track').forEach(track=>track.style.setProperty('--playhead',percent+'%'));
+   const videoPlayhead=document.getElementById('videoSequencePlayhead');
+   if(videoPlayhead)videoPlayhead.style.left=percent+'%';
   if(readout)readout.textContent=time(seconds)+' / '+time(totalDuration);
   if(position)position.textContent=time(seconds);
  };
@@ -479,11 +488,20 @@ async function renderAudioTimeline(){
   });
  };
  window.requestAnimationFrame(updateCanvases);
- seek.addEventListener('input',()=>{\n   if(audioPreviewState)stopAudioPreview(false);\n   updatePlayhead();\n   syncAssemblyVideoPreview(Number(seek.value)||0,false);\n   const previewStatus=root.querySelector('#audioPreviewStatus');\n   if(previewStatus)previewStatus.textContent='Preview stopped at the new playhead. Press Play to continue from here.';\n  });
+ seek.addEventListener('input',()=>{
+   if(audioPreviewState)stopAudioPreview(false);
+   updatePlayhead();
+   syncAssemblyVideoPreview(Number(seek.value)||0,false);
+   const previewStatus=root.querySelector('#audioPreviewStatus');
+   if(previewStatus)previewStatus.textContent='Preview stopped at the new playhead. Press Play to continue from here.';
+  });
  const play=root.querySelector('#audioPreviewPlay');
  const stop=root.querySelector('#audioPreviewStop');
  const status=root.querySelector('#audioPreviewStatus');
- if(play)play.addEventListener('click',()=>{\n   stopAudioPreview(false);\n   startAudioPreview(totalDuration,specs,buffers,seek,updatePlayhead,status).then(()=>{syncAssemblyVideoPreview(Number(seek.value)||0,true);startAssemblyVideoSyncLoop();}).catch(error=>{if(status)status.textContent=error.message;stopAudioPreview(false);if(play)play.disabled=false;});\n  });
+ if(play)play.addEventListener('click',()=>{
+   stopAudioPreview(false);
+   startAudioPreview(totalDuration,specs,buffers,seek,updatePlayhead,status).then(()=>{syncAssemblyVideoPreview(Number(seek.value)||0,true);startAssemblyVideoSyncLoop();}).catch(error=>{if(status)status.textContent=error.message;stopAudioPreview(false);if(play)play.disabled=false;});
+  });
  if(stop)stop.addEventListener('click',()=>stopAudioPreview());
  updatePlayhead();
 }
