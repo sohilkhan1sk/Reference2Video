@@ -71,7 +71,10 @@ return '<div class="assembly-queue-item"><strong>'+esc(label)+'</strong><div cla
 box.querySelectorAll('.queue-up').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),-1)));
 box.querySelectorAll('.queue-down').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),1)));
 box.querySelectorAll('.queue-remove').forEach(button=>button.addEventListener('click',()=>{assemblyQueue.splice(Number(button.dataset.index),1);renderAssemblyQueue();}));
-if(button)button.disabled=false;\nrenderAssemblyVideoPreview();\nrenderAudioTimeline();\n}
+if(button)button.disabled=false;
+renderAssemblyVideoPreview();
+renderAudioTimeline();
+}
 function moveAssemblyItem(index,delta){
 const target=index+delta;
 if(target<0||target>=assemblyQueue.length)return;
@@ -170,7 +173,7 @@ function stopAudioPreview(preservePosition=true){
  pauseAssemblyVideoPreview();
  const play=document.getElementById('audioPreviewPlay');
  const stop=document.getElementById('audioPreviewStop');
- if(play){play.disabled=false;play.textContent='▶ Play from playhead';}
+ if(play){play.disabled=false;play.textContent='▶ Play video + audio';}
  if(stop)stop.disabled=true;
 }
 
