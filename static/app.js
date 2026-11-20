@@ -1,5 +1,5 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
-let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={};
+let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={},assemblyVideoPreviewState=null,assemblyVideoSyncRaf=0;
 fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
@@ -56,10 +56,7 @@ if(status)status.textContent='Added clip to the assembly queue. Click Add to ass
 function renderAssemblyQueue(){
 const box=document.getElementById('assemblyQueue'),button=document.getElementById('assembleBtn');
 if(!box)return;
-if(!assemblyQueue.length){
-box.innerHTML='<p class="assembly-empty">No clips selected yet. Load history and add completed clips above.</p>';
-if(button)button.disabled=true;
-renderAudioTimeline();
+if(!assemblyQueue.length){\nbox.innerHTML='<p class="assembly-empty">No clips selected yet. Load history and add completed clips above.</p>';\nif(button)button.disabled=true;\nrenderAssemblyVideoPreview();\nrenderAudioTimeline();
 return;
 }
 box.innerHTML=assemblyQueue.map((jobId,index)=>{
@@ -70,9 +67,7 @@ return '<div class="assembly-queue-item"><strong>'+esc(label)+'</strong><div cla
 box.querySelectorAll('.queue-up').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),-1)));
 box.querySelectorAll('.queue-down').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),1)));
 box.querySelectorAll('.queue-remove').forEach(button=>button.addEventListener('click',()=>{assemblyQueue.splice(Number(button.dataset.index),1);renderAssemblyQueue();}));
-if(button)button.disabled=false;
-renderAudioTimeline();
-}
+if(button)button.disabled=false;\nrenderAssemblyVideoPreview();\nrenderAudioTimeline();\n}
 function moveAssemblyItem(index,delta){
 const target=index+delta;
 if(target<0||target>=assemblyQueue.length)return;
@@ -166,11 +161,49 @@ function stopAudioPreview(preservePosition=true){
   try{source.disconnect();}catch(_){}
  });
  try{state.master?.disconnect();}catch(_){}
- audioPreviewState=null;
- const play=document.getElementById('audioPreviewPlay');
+ audioPreviewState=null;\n stopAssemblyVideoSyncLoop();\n pauseAssemblyVideoPreview();\n const play=document.getElementById('audioPreviewPlay');
  const stop=document.getElementById('audioPreviewStop');
  if(play){play.disabled=false;play.textContent='▶ Play from playhead';}
  if(stop)stop.disabled=true;
+}
+
+
+function stopAssemblyVideoSyncLoop(){if(assemblyVideoSyncRaf)window.cancelAnimationFrame(assemblyVideoSyncRaf);assemblyVideoSyncRaf=0;}
+function pauseAssemblyVideoPreview(){const state=assemblyVideoPreviewState;if(!state)return;state.shouldPlay=false;if(state.video&&!state.video.paused)state.video.pause();}
+function syncAssemblyVideoPreview(seconds,shouldPlay){
+ const state=assemblyVideoPreviewState;if(!state||!state.video)return;
+ const located=window.Reference2VideoVideoPreview.locateSegmentAtTime(state.plan,seconds);
+ state.currentSeconds=Math.max(0,Number(seconds)||0);state.shouldPlay=Boolean(shouldPlay);
+ if(!located){pauseAssemblyVideoPreview();return;}
+ const segment=located.segment,video=state.video,offset=Math.max(0,located.offsetSeconds);
+ const activate=()=>{
+  if(assemblyVideoPreviewState!==state)return;state.loading=false;
+  const safeOffset=Number.isFinite(video.duration)&&video.duration>0?Math.min(offset,Math.max(0,video.duration-0.04)):offset;
+  try{if(Math.abs((video.currentTime||0)-safeOffset)>0.2)video.currentTime=safeOffset;}catch(_){}
+  if(state.shouldPlay){const result=video.play();if(result&&typeof result.catch==='function')result.catch(()=>{if(state.status)state.status.textContent='The browser blocked video playback. Press Play again or check browser media permissions.';});}
+  else video.pause();
+  if(state.status)state.status.textContent='Scene '+(segment.index+1)+' of '+state.plan.segments.length+' · '+window.Reference2VideoTimeline.formatTime(state.currentSeconds)+' · source video muted; selected audio tracks play from the local preview.';
+ };
+ if(state.activeJobId!==segment.jobId){
+  state.activeJobId=segment.jobId;state.loading=true;if(state.status)state.status.textContent='Loading scene '+(segment.index+1)+' of '+state.plan.segments.length+'…';
+  video.pause();video.onloadedmetadata=activate;
+  video.onerror=()=>{if(assemblyVideoPreviewState!==state)return;state.loading=false;state.shouldPlay=false;if(state.status)state.status.textContent='Could not load scene '+(segment.index+1)+'. Reload history and confirm its MP4 is still available.';stopAudioPreview(false);};
+  video.src=segment.url;video.load();if(video.readyState>=1)activate();return;
+ }
+ if(video.readyState>=1)activate();
+}
+function startAssemblyVideoSyncLoop(){
+ stopAssemblyVideoSyncLoop();
+ const tick=()=>{if(!audioPreviewState){assemblyVideoSyncRaf=0;pauseAssemblyVideoPreview();return;}syncAssemblyVideoPreview(audioTimelinePlayheadSeconds,true);assemblyVideoSyncRaf=window.requestAnimationFrame(tick);};
+ tick();
+}
+function renderAssemblyVideoPreview(){
+ const panel=document.getElementById('assemblyVideoPreviewPanel');if(!panel)return;
+ const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(assemblyQueue.map(id=>recentJobsById[id]));
+ if(!plan.segments.length){assemblyVideoPreviewState=null;panel.innerHTML='<div class="video-preview-empty">Add available completed clips from history to preview the scene sequence.</div>';return;}
+ const segments=plan.segments.map(segment=>'<span class="video-sequence-segment" style="left:'+segment.startPercent+'%;width:'+segment.widthPercent+'%" title="'+esc(segment.title)+' · '+window.Reference2VideoTimeline.formatTime(segment.durationSeconds)+'">'+esc(segment.title)+'</span>').join('');
+ panel.innerHTML='<div class="assembly-video-frame"><video id="assemblyVideoMonitor" muted playsinline preload="metadata"></video></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">Preview timing uses requested clip durations saved in job metadata; actual MP4 lengths may differ slightly. Source clip audio is muted to avoid double playback.</small>';
+ const video=panel.querySelector('#assemblyVideoMonitor');assemblyVideoPreviewState={plan,video,status:panel.querySelector('#assemblyVideoStatus'),activeJobId:null,currentSeconds:0,shouldPlay:false,loading:false};syncAssemblyVideoPreview(0,false);
 }
 
 function drawAudioWaveform(canvas,buffer,spec,lane){
@@ -263,7 +296,7 @@ async function startAudioPreview(durationSeconds,specs,buffers,seek,updatePlayhe
   durationSeconds,playheadSeconds:playhead,tracks
  });
  const playable=plan.tracks.filter(track=>track.shouldPlay&&buffers[track.index]);
- if(!playable.length)throw Error('No decoded audio remains at this playhead. Move the playhead earlier or choose another audio file.');
+ // Keep the Web Audio clock running for video-only previews too.
  const master=context.createDynamicsCompressor();
  master.threshold.value=-4;
  master.knee.value=4;
@@ -310,7 +343,7 @@ async function startAudioPreview(durationSeconds,specs,buffers,seek,updatePlayhe
  const stop=document.getElementById('audioPreviewStop');
  if(play){play.disabled=true;play.textContent='Playing audio…';}
  if(stop)stop.disabled=false;
- if(status)status.textContent='Playing '+playable.length+' synchronized local audio track(s). Preview compression and music ducking may differ from the FFmpeg export.';
+ if(status)status.textContent='Playing scene video with '+playable.length+' synchronized local audio track(s). Browser preview may differ from the FFmpeg mix.';
  const tick=()=>{
   if(audioPreviewState!==state)return;
   const elapsed=Math.max(0,context.currentTime-state.startContextTime);
@@ -420,7 +453,7 @@ async function renderAudioTimeline(){
  const decodeWarning=selectedCount>decodedCount?' '+(selectedCount-decodedCount)+' selected file(s) could not be decoded by this browser; those tracks may still export through FFmpeg.':'';
  root.innerHTML=
   '<div class="audio-timeline-head"><div><b>AUDIO TIMELINE PREVIEW</b><p>Waveforms and playback use local browser decoding. Audio files are not uploaded until you start assembly.</p></div><strong id="audioTimelineReadout">00:00 / '+time(totalDuration)+'</strong></div>'+
-  '<div class="audio-preview-controls"><button type="button" class="secondary" id="audioPreviewPlay" '+(decodedCount?'':'disabled')+'>▶ Play from playhead</button><button type="button" class="secondary" id="audioPreviewStop" disabled>Stop</button><span id="audioPreviewStatus">'+(decodedCount?'Ready to preview '+decodedCount+' decoded track(s).':'Choose supported audio files to preview the mix.')+esc(decodeWarning)+'</span></div>'+
+  '<div class="audio-preview-controls"><button type="button" class="secondary" id="audioPreviewPlay">▶ Play video + audio</button><button type="button" class="secondary" id="audioPreviewStop" disabled>Stop</button><span id="audioPreviewStatus">'+(decodedCount?'Ready to preview '+decodedCount+' decoded track(s).':'Choose supported audio files to preview the mix.')+esc(decodeWarning)+'</span></div>'+
   '<div class="audio-timeline-scroll"><div class="audio-timeline-canvas">'+
    '<div class="audio-timeline-ruler-row"><div class="audio-timeline-label ruler-label">TRACK</div><div class="audio-timeline-ruler-track">'+tickHtml+'</div></div>'+
    '<div class="audio-timeline-lanes">'+laneHtml+'</div>'+
@@ -434,7 +467,7 @@ async function renderAudioTimeline(){
   const seconds=Number(seek.value)||0;
   audioTimelinePlayheadSeconds=seconds;
   const percent=seconds/totalDuration*100;
-  root.querySelectorAll('.audio-timeline-track').forEach(track=>track.style.setProperty('--playhead',percent+'%'));
+  root.querySelectorAll('.audio-timeline-track').forEach(track=>track.style.setProperty('--playhead',percent+'%'));\n   const videoPlayhead=document.getElementById('videoSequencePlayhead');\n   if(videoPlayhead)videoPlayhead.style.left=percent+'%';
   if(readout)readout.textContent=time(seconds)+' / '+time(totalDuration);
   if(position)position.textContent=time(seconds);
  };
@@ -446,20 +479,11 @@ async function renderAudioTimeline(){
   });
  };
  window.requestAnimationFrame(updateCanvases);
- seek.addEventListener('input',()=>{
-  if(audioPreviewState){stopAudioPreview(false);const status=root.querySelector('#audioPreviewStatus');if(status)status.textContent='Preview stopped at the new playhead. Press Play to continue from here.';}
-  updatePlayhead();
- });
+ seek.addEventListener('input',()=>{\n   if(audioPreviewState)stopAudioPreview(false);\n   updatePlayhead();\n   syncAssemblyVideoPreview(Number(seek.value)||0,false);\n   const previewStatus=root.querySelector('#audioPreviewStatus');\n   if(previewStatus)previewStatus.textContent='Preview stopped at the new playhead. Press Play to continue from here.';\n  });
  const play=root.querySelector('#audioPreviewPlay');
  const stop=root.querySelector('#audioPreviewStop');
  const status=root.querySelector('#audioPreviewStatus');
- if(play)play.addEventListener('click',()=>{
-  startAudioPreview(totalDuration,specs,buffers,seek,updatePlayhead,status).catch(error=>{
-   if(status)status.textContent=error.message;
-   stopAudioPreview(false);
-   if(play)play.disabled=!decodedCount;
-  });
- });
+ if(play)play.addEventListener('click',()=>{\n   stopAudioPreview(false);\n   startAudioPreview(totalDuration,specs,buffers,seek,updatePlayhead,status).then(()=>{syncAssemblyVideoPreview(Number(seek.value)||0,true);startAssemblyVideoSyncLoop();}).catch(error=>{if(status)status.textContent=error.message;stopAudioPreview(false);if(play)play.disabled=false;});\n  });
  if(stop)stop.addEventListener('click',()=>stopAudioPreview());
  updatePlayhead();
 }
