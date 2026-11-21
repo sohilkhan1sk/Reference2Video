@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "ai": "^6.0.0",
-    "ffmpeg-static": "^5.2.0"
+    "ffmpeg-static": "^5.2.0",
+    "@w6s/ffprobe-static": "^3.1.1"
   }
 }
