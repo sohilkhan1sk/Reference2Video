@@ -142,3 +142,16 @@ For AWS S3, omit `S3_ENDPOINT_URL`, set `S3_REGION` to the bucket's region, and 
 If these settings are absent, the app safely falls back to local storage and displays a warning. If an upload fails after a provider has already generated a clip, the app marks the clip completed and keeps the local MP4 rather than encouraging a second paid generation; download it before the next redeploy. The history endpoint checks object availability, and completed clip links create a new short-lived signed URL when opened.
 
 **Remaining limitations:** job metadata is still in SQLite unless `DATABASE_URL` is configured; no Render PostgreSQL instance is currently provisioned. Analysis jobs remain in process memory. The FFmpeg export supports uploaded narration, looping/ducked background music, timed SFX, per-track source trimming and fade-in/fade-out. The browser also provides local waveform summaries and synchronized audio preview; this preview does not exactly reproduce FFmpeg music ducking, limiting or AAC encoding. TTS, generated music, transitions, subtitles and final audio mastering are not included. Actual FFmpeg execution on the Render instance and an S3-backed export have not yet been verified.
+
+
+## Measured generated-clip metadata and preview timing
+
+After the video provider returns an MP4, the worker runs `ffprobe` against the actual file and stores its measured duration, pixel dimensions, frame rate, video codec and whether an audio stream is present. The preview sequence and audio timeline use this measured duration instead of the requested clip length, so scene boundaries are based on the encoded media.
+
+- The requested duration remains stored separately for cost/audit history and as a backward-compatible fallback for older jobs.
+- Existing SQLite and PostgreSQL databases are migrated automatically when the app starts.
+- If `ffprobe` is unavailable or the MP4 cannot be inspected, the generated clip is still marked completed (the provider request may already have been billed). The job records the probe warning and the preview falls back to the requested duration rather than asking the user to generate again.
+- The project installs `@w6s/ffprobe-static` with npm. The package exposes a platform-specific binary path; the app can also use a system `ffprobe` or an explicit `FFPROBE_PATH`.
+- Add `FFPROBE_PATH` only when you manage the binary yourself. No API key or paid provider request is needed for probing.
+
+The metadata probe itself has not been exercised against a real provider-generated clip in this repository's automated tests; its parser and failure handling are unit-tested with mocked ffprobe responses. A live Render/MP4 probe should be verified after deployment.
