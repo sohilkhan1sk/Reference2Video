@@ -5,6 +5,7 @@ from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
 from assembly import assemble_clips
+from media_probe import probe_media
 from job_store import (
     init_job_store, create_video_job, update_video_job,
     get_video_job_record, list_video_job_records, mark_stale_video_jobs,
@@ -302,6 +303,57 @@ def ensure_ffmpeg():
         return existing
 
 
+
+def available_ffprobe_binary():
+    configured = os.getenv("FFPROBE_PATH", "").strip()
+    if configured and Path(configured).is_file():
+        return configured
+    system_binary = shutil.which("ffprobe")
+    if system_binary:
+        return system_binary
+    if not shutil.which("node"):
+        return None
+    try:
+        completed = subprocess.run(
+            ["node", "-e", "const p=require('@w6s/ffprobe-static').path; if(p) process.stdout.write(p);"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=10,
+            env=os.environ.copy()
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    candidate = Path((completed.stdout or "").strip())
+    return str(candidate) if completed.returncode == 0 and candidate.is_file() else None
+
+
+def ensure_ffprobe():
+    """Find ffprobe or install the pinned platform binary through npm."""
+    existing = available_ffprobe_binary()
+    if existing:
+        return existing
+    if not shutil.which("node"):
+        raise RuntimeError("ffprobe is unavailable and Node.js is not installed. Set FFPROBE_PATH or install ffprobe in the Render build.")
+    if not shutil.which("npm"):
+        raise RuntimeError("ffprobe is unavailable and npm is not installed. Set FFPROBE_PATH or install ffprobe in the Render build.")
+    with video_sdk_install_lock:
+        existing = available_ffprobe_binary()
+        if existing:
+            return existing
+        try:
+            completed = subprocess.run(
+                ["npm", "install", "--omit=dev", "--no-audit", "--no-fund"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=360,
+                env=os.environ.copy()
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Installing the ffprobe binary timed out. Set FFPROBE_PATH or retry after the service is stable.") from exc
+        existing = available_ffprobe_binary()
+        if completed.returncode != 0 or not existing:
+            details = (completed.stderr or completed.stdout or
+                       "npm install did not provide @w6s/ffprobe-static.")[-1800:]
+            raise RuntimeError("Could not prepare ffprobe for MP4 inspection. Details: " + details)
+        return existing
+
+
 def _valid_media_id(value):
     return (
         isinstance(value, str) and len(value) == 32
@@ -462,6 +514,20 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
             raise RuntimeError(friendly)
         if not output_path.exists() or output_path.stat().st_size < 1024:
             raise RuntimeError("The video provider returned no usable MP4 file. Please retry.")
+
+        # A probe failure must not discard a clip that may already have incurred a charge.
+        probe_metadata = {}
+        probe_warning = None
+        try:
+            update_video_job(job_id, message="Measuring the generated MP4 duration and format…")
+            probe_metadata = probe_media(output_path, ensure_ffprobe())
+        except Exception as probe_error:
+            probe_warning = str(probe_error)[:1200]
+            app.logger.warning(
+                "Could not measure generated MP4 metadata for job %s: %s",
+                job_id, probe_warning
+            )
+
         media_uri = None
         storage_warning = None
         if media_storage_configured():
@@ -481,12 +547,18 @@ def run_video_job(job_id, prompt, duration, aspect_ratio, resolution):
             ready_message = "Video ready, but durable upload failed. Download it before a server restart or redeploy."
         else:
             ready_message = "Video ready — temporary server storage. Configure S3-compatible storage to retain it across redeploys."
+        if probe_metadata.get("actual_duration_seconds"):
+            ready_message += f" · measured {probe_metadata['actual_duration_seconds']:.2f}s"
+        else:
+            ready_message += " · requested duration used for preview (MP4 probe unavailable)"
 
         update_video_job(
             job_id, status="COMPLETED", message=ready_message,
             video_url=media_uri or f"/api/generated/{job_id}",
             download_url=f"/api/generated/{job_id}?download=1",
-            error=storage_warning
+            error=storage_warning,
+            probe_error=probe_warning,
+            **probe_metadata
         )
         if media_uri:
             try:
@@ -593,6 +665,13 @@ def get_video_job(job_id):
         provider=payload.get("provider"),
         model=payload.get("model"),
         duration=payload.get("duration"),
+        actual_duration_seconds=payload.get("actual_duration_seconds"),
+        actual_width=payload.get("actual_width"),
+        actual_height=payload.get("actual_height"),
+        actual_frame_rate=payload.get("actual_frame_rate"),
+        actual_video_codec=payload.get("actual_video_codec"),
+        actual_has_audio=payload.get("actual_has_audio"),
+        probe_error=payload.get("probe_error"),
         resolution=payload.get("resolution"),
         estimated_cost_usd=payload.get("estimated_cost_usd")
     ), 200
@@ -629,6 +708,13 @@ def list_recent_video_jobs():
             "provider": job.get("provider"),
             "model": job.get("model"),
             "duration": job.get("duration"),
+            "actual_duration_seconds": job.get("actual_duration_seconds"),
+            "actual_width": job.get("actual_width"),
+            "actual_height": job.get("actual_height"),
+            "actual_frame_rate": job.get("actual_frame_rate"),
+            "actual_video_codec": job.get("actual_video_codec"),
+            "actual_has_audio": job.get("actual_has_audio"),
+            "probe_error": job.get("probe_error"),
             "aspect_ratio": job.get("aspect_ratio"),
             "resolution": job.get("resolution"),
             "estimated_cost_usd": job.get("estimated_cost_usd"),
@@ -1011,6 +1097,8 @@ def health():
         video_sdk_installed=(ROOT / "node_modules" / "ai" / "package.json").exists(),
         ffmpeg_available=bool(available_ffmpeg_binary()),
         ffmpeg_installable=bool(shutil.which("node") and shutil.which("npm")),
+        ffprobe_available=bool(available_ffprobe_binary()),
+        ffprobe_installable=bool(shutil.which("node") and shutil.which("npm")),
         job_store_backend=job_store_backend(),
         media_storage_backend=media_storage_backend(),
         media_storage_configured=media_storage_configured(),
