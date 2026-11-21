@@ -16,8 +16,10 @@ function buildVideoSequencePlan(jobs){
   if(!job||job.status!=="COMPLETED"||!job.artifact_available||!isGeneratedVideoPath(job.video_url))return;
   const timing=resolveClipDuration(job);if(!timing)return;
   const index=segments.length;
-  segments.push({jobId:String(job.job_id||""),index,title:"Scene "+String(index+1).padStart(2,"0"),url:job.video_url,durationSeconds:timing.durationSeconds,durationSource:timing.source,startSeconds:cursor,endSeconds:cursor+timing.durationSeconds,startPercent:0,widthPercent:0});
-  cursor+=timing.durationSeconds;
+  const startSeconds=cursor;
+  const endSeconds=Math.round((cursor+timing.durationSeconds)*1000)/1000;
+  segments.push({jobId:String(job.job_id||""),index,title:"Scene "+String(index+1).padStart(2,"0"),url:job.video_url,durationSeconds:endSeconds-startSeconds,durationSource:timing.source,startSeconds,endSeconds,startPercent:0,widthPercent:0});
+  cursor=endSeconds;
  });
  segments.forEach(segment=>{segment.startPercent=cursor?segment.startSeconds/cursor*100:0;segment.widthPercent=cursor?segment.durationSeconds/cursor*100:0;});
  const measuredCount=segments.filter(segment=>segment.durationSource==="measured").length;
