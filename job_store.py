@@ -21,7 +21,9 @@ _ALLOWED_FIELDS = {
     "status", "message", "created_at", "updated_at", "approved_at",
     "provider", "model", "duration", "aspect_ratio", "resolution",
     "rate_per_second_usd", "estimated_cost_usd", "video_url",
-    "download_url", "error",
+    "download_url", "error", "actual_duration_seconds", "actual_width",
+    "actual_height", "actual_frame_rate", "actual_video_codec",
+    "actual_has_audio", "probe_error",
 }
 
 
@@ -95,9 +97,36 @@ def init_job_store():
                 estimated_cost_usd DOUBLE PRECISION,
                 video_url TEXT,
                 download_url TEXT,
-                error TEXT
+                error TEXT,
+                actual_duration_seconds DOUBLE PRECISION,
+                actual_width INTEGER,
+                actual_height INTEGER,
+                actual_frame_rate DOUBLE PRECISION,
+                actual_video_codec TEXT,
+                actual_has_audio BOOLEAN,
+                probe_error TEXT
             )
         """)
+        video_migrations = {
+            "actual_duration_seconds": "DOUBLE PRECISION",
+            "actual_width": "INTEGER",
+            "actual_height": "INTEGER",
+            "actual_frame_rate": "DOUBLE PRECISION",
+            "actual_video_codec": "TEXT",
+            "actual_has_audio": "BOOLEAN",
+            "probe_error": "TEXT",
+        }
+        if _BACKEND == "postgres":
+            for column, sql_type in video_migrations.items():
+                _execute(conn, f"ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS {column} {sql_type}")
+        else:
+            video_columns = {
+                row["name"] for row in
+                _execute(conn, "PRAGMA table_info(video_jobs)").fetchall()
+            }
+            for column, sql_type in video_migrations.items():
+                if column not in video_columns:
+                    _execute(conn, f"ALTER TABLE video_jobs ADD COLUMN {column} {sql_type}")
         _execute(conn, """
             CREATE INDEX IF NOT EXISTS idx_video_jobs_created_at
             ON video_jobs (created_at)
