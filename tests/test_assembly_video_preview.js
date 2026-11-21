@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import "../static/assembly_video_preview.js";
-const {buildVideoSequencePlan,locateSegmentAtTime,isGeneratedVideoPath}=globalThis.Reference2VideoVideoPreview;
+const {buildVideoSequencePlan,locateSegmentAtTime,isGeneratedVideoPath,resolveClipDuration}=globalThis.Reference2VideoVideoPreview;
 function job(id,duration,overrides={}){return {job_id:id,status:"COMPLETED",artifact_available:true,video_url:"/api/generated/"+id,duration,...overrides};}
 test("sequence preserves queue order and cumulative positions",()=>{
  const p=buildVideoSequencePlan([job("a",5),job("b",8),job("c",10)]);
@@ -19,4 +19,21 @@ test("lookup clamps negative and past-end positions",()=>{
 });
 test("only generated same-origin paths are accepted",()=>{
  assert.equal(isGeneratedVideoPath("/api/generated/abc-123"),true);assert.equal(isGeneratedVideoPath("https://example.com/api/generated/abc"),false);assert.equal(isGeneratedVideoPath("/api/generated/abc?download=1"),false);assert.equal(isGeneratedVideoPath("/uploads/a.mp4"),false);
+});
+test("measured MP4 duration takes precedence over the requested duration",()=>{
+ const timing=resolveClipDuration(job("a",5,{actual_duration_seconds:5.437}));
+ assert.deepEqual(timing,{durationSeconds:5.437,source:"measured"});
+ const p=buildVideoSequencePlan([job("a",5,{actual_duration_seconds:5.437}),job("b",8)]);
+ assert.equal(p.durationSeconds,13.437);assert.equal(p.measuredCount,1);assert.equal(p.requestedFallbackCount,1);
+ assert.equal(p.segments[1].startSeconds,5.437);
+});
+test("requested duration remains a backward-compatible fallback for old jobs",()=>{
+ const timing=resolveClipDuration(job("legacy",6));
+ assert.deepEqual(timing,{durationSeconds:6,source:"requested"});
+ const p=buildVideoSequencePlan([job("legacy",6)]);
+ assert.equal(p.segments[0].durationSource,"requested");assert.equal(p.requestedFallbackCount,1);
+});
+test("invalid or missing requested and measured durations are not guessed",()=>{
+ assert.equal(resolveClipDuration(job("bad",0,{actual_duration_seconds:-1})),null);
+ assert.equal(resolveClipDuration(null),null);
 });
