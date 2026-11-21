@@ -23,7 +23,12 @@ if(status){const dbNote=store==='postgres'?'PostgreSQL keeps job metadata across
 if(!jobs.length){box.innerHTML='<p class="history-empty">No video-generation jobs have been recorded yet.</p>';return;}
 box.innerHTML=jobs.map(job=>{
 const created=job.created_at?new Date(Number(job.created_at)*1000).toLocaleString():'Date unknown';
-const details=[job.duration?job.duration+' sec':'',job.aspect_ratio||'',job.resolution||'',job.estimated_cost_usd!=null?formatUsd(job.estimated_cost_usd)+' estimated':''].filter(Boolean).join(' · ');
+const actualDuration=Number(job.actual_duration_seconds);
+const durationText=Number.isFinite(actualDuration)&&actualDuration>0
+ ?actualDuration.toFixed(2)+' sec measured'+(job.duration?' · requested '+job.duration+' sec':'')
+ :(job.duration?job.duration+' sec requested':'');
+const dimensions=job.actual_width&&job.actual_height?job.actual_width+'×'+job.actual_height:'';
+const details=[durationText,dimensions,job.actual_frame_rate?Number(job.actual_frame_rate).toFixed(2)+' fps':'',job.aspect_ratio||'',job.resolution||'',job.estimated_cost_usd!=null?formatUsd(job.estimated_cost_usd)+' estimated':''].filter(Boolean).join(' · ');
 let output='';
 if(job.status==='COMPLETED'){
 if(job.artifact_available){output='<video controls playsinline preload="metadata" src="'+esc(job.video_url)+'"></video><div class="video-actions"><a href="'+esc(job.download_url)+'">Download MP4 ↓</a><button type="button" class="secondary add-to-assembly" data-job="'+esc(job.job_id)+'">Add to assembly +</button></div>';}
@@ -65,7 +70,9 @@ return;
 }
 box.innerHTML=assemblyQueue.map((jobId,index)=>{
 const job=recentJobsById[jobId]||{};
-const label='Clip '+String(index+1).padStart(2,'0')+' · '+(job.duration||'?')+' sec · '+(job.aspect_ratio||'format unknown');
+const timing=window.Reference2VideoVideoPreview.resolveClipDuration(job);
+const durationLabel=timing?timing.durationSeconds.toFixed(2)+' sec '+(timing.source==='measured'?'measured':'requested'):'duration unavailable';
+const label='Clip '+String(index+1).padStart(2,'0')+' · '+durationLabel+' · '+(job.aspect_ratio||'format unknown');
 return '<div class="assembly-queue-item"><strong>'+esc(label)+'</strong><div class="queue-actions"><button type="button" class="secondary queue-up" data-index="'+index+'" '+(index===0?'disabled':'')+'>↑</button><button type="button" class="secondary queue-down" data-index="'+index+'" '+(index===assemblyQueue.length-1?'disabled':'')+'>↓</button><button type="button" class="secondary queue-remove" data-index="'+index+'">Remove</button></div></div>';
 }).join('');
 box.querySelectorAll('.queue-up').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),-1)));
@@ -246,8 +253,11 @@ function renderAssemblyVideoPreview(){
  const panel=document.getElementById('assemblyVideoPreviewPanel');if(!panel)return;
  const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(assemblyQueue.map(id=>recentJobsById[id]));
  if(!plan.segments.length){assemblyVideoPreviewState=null;panel.innerHTML='<div class="video-preview-empty">Add available completed clips from history to preview the scene sequence.</div>';return;}
- const segments=plan.segments.map(segment=>'<span class="video-sequence-segment" style="left:'+segment.startPercent+'%;width:'+segment.widthPercent+'%" title="'+esc(segment.title)+' · '+window.Reference2VideoTimeline.formatTime(segment.durationSeconds)+'">'+esc(segment.title)+'</span>').join('');
- panel.innerHTML='<div class="assembly-video-frame"><video id="assemblyVideoMonitor" muted playsinline preload="metadata"></video></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">Preview timing uses requested clip durations saved in job metadata; actual MP4 lengths may differ slightly. Source clip audio is muted to avoid double playback.</small>';
+ const segments=plan.segments.map(segment=>'<span class="video-sequence-segment" style="left:'+segment.startPercent+'%;width:'+segment.widthPercent+'%" title="'+esc(segment.title)+' · '+window.Reference2VideoTimeline.formatTime(segment.durationSeconds)+' · '+segment.durationSource+' duration">'+esc(segment.title)+'</span>').join('');
+ const timingNote=plan.requestedFallbackCount===0
+  ?'All scene boundaries use ffprobe-measured MP4 durations.'
+  :'Measured duration for '+plan.measuredCount+' of '+plan.segments.length+' clips; '+plan.requestedFallbackCount+' clip(s) use the requested duration until ffprobe metadata is available.';
+ panel.innerHTML='<div class="assembly-video-frame"><video id="assemblyVideoMonitor" muted playsinline preload="metadata"></video></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">'+timingNote+' Source clip audio is muted to avoid double playback.</small>';
  const video=panel.querySelector('#assemblyVideoMonitor');assemblyVideoPreviewState={plan,video,status:panel.querySelector('#assemblyVideoStatus'),activeJobId:null,currentSeconds:0,shouldPlay:false,loading:false};syncAssemblyVideoPreview(0,false);
 }
 
@@ -415,8 +425,8 @@ async function renderAudioTimeline(){
  stopAudioPreview();
  const revision=++audioTimelineRevision;
  const totalDuration=assemblyQueue.reduce((sum,id)=>{
-  const duration=Number(recentJobsById[id]?.duration);
-  return sum+(Number.isFinite(duration)&&duration>0?duration:0);
+  const timing=window.Reference2VideoVideoPreview.resolveClipDuration(recentJobsById[id]);
+  return sum+(timing?timing.durationSeconds:0);
  },0);
  if(!assemblyQueue.length){
   root.innerHTML='<div class="audio-timeline-empty">Add completed clips from history to build the timeline preview.</div>';
