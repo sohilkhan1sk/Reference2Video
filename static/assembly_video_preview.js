@@ -1,7 +1,7 @@
 (function(root,factory){const api=factory();if(typeof module!=="undefined"&&module.exports)module.exports=api;if(root)root.Reference2VideoVideoPreview=api;})(typeof window!=="undefined"?window:globalThis,function(){
 "use strict";
 function finitePositive(value){const n=Number(value);return Number.isFinite(n)&&n>0?n:null;}
-function finiteNonNegative(value,fallback=0){const n=Number(value);return Number.isFinite(n)&&n>=0?n:fallback;}
+function finiteNonNegative(value,fallback=0){if(value===undefined||value===null||value==="")return fallback;const n=Number(value);return Number.isFinite(n)&&n>=0?n:null;}
 function resolveClipDuration(job){
  if(!job||typeof job!=="object")return null;
  const measured=finitePositive(job.actual_duration_seconds);
@@ -20,15 +20,22 @@ function buildVideoSequencePlan(jobs,editsById){
   const jobId=String(job.job_id||"");
   const edit=edits[jobId]&&typeof edits[jobId]==="object"?edits[jobId]:{};
   const sourceDuration=timing.durationSeconds;
-  const trimStart=finiteNonNegative(edit.trim_start_seconds,0);
-  const requestedEnd=finiteNonNegative(edit.trim_end_seconds,0);
+  const rawStart=finiteNonNegative(edit.trim_start_seconds,0);
+  const rawEnd=finiteNonNegative(edit.trim_end_seconds,0);
+  if(rawStart===null||rawEnd===null)errors.push("Scene "+(segments.length+1)+" trim values must be finite non-negative seconds.");
+  const trimStart=rawStart===null?0:rawStart;
+  const requestedEnd=rawEnd===null?0:rawEnd;
   const trimEnd=requestedEnd===0?sourceDuration:requestedEnd;
-  let valid=trimStart<trimEnd&&trimEnd<=sourceDuration+0.001;
+  let valid=rawStart!==null&&rawEnd!==null&&trimStart<trimEnd&&trimEnd<=sourceDuration+0.001;
   if(!valid)errors.push("Scene "+(segments.length+1)+" trim must stay within its "+sourceDuration.toFixed(2)+" second source clip.");
   const safeStart=valid?trimStart:0;
   const safeEnd=valid?Math.min(trimEnd,sourceDuration):sourceDuration;
   const transition=String(edit.transition_after||"cut").toLowerCase();
   let transitionDuration=transition==="crossfade"?finiteNonNegative(edit.transition_duration_seconds,0.5):0;
+  if(transition==="crossfade"&&transitionDuration===null){
+   errors.push("Scene "+(segments.length+1)+" crossfade duration must be a finite number.");
+   transitionDuration=0;
+  }
   if(!["cut","crossfade"].includes(transition)){
    errors.push("Scene "+(segments.length+1)+" transition must be cut or crossfade.");
    transitionDuration=0;
