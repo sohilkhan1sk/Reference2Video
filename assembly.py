@@ -1,4 +1,5 @@
 """FFmpeg assembly helpers for scene clips with optional narration and music."""
+import json
 import math
 import subprocess
 from pathlib import Path
@@ -16,21 +17,146 @@ def output_size(aspect_ratio):
         raise ValueError("Assembly supports only 16:9 and 9:16 exports.") from exc
 
 
-def video_filter(aspect_ratio):
-    width, height = output_size(aspect_ratio)
-    return (
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-        "setsar=1,fps=30,format=yuv420p"
+def _scene_seconds(value, label, maximum=3600):
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a number.") from exc
+    if not math.isfinite(number) or number < 0 or number > maximum:
+        raise ValueError(f"{label} must be between 0 and {maximum} seconds.")
+    return round(number, 3)
+
+
+def normalize_scene_edits(scene_edits, source_durations):
+    """Validate scene trims and outgoing transitions against measured source durations."""
+    durations = list(source_durations or [])
+    if not durations:
+        raise ValueError("At least one source clip duration is required.")
+    if scene_edits in (None, ""):
+        scene_edits = []
+    if isinstance(scene_edits, str):
+        try:
+            scene_edits = json.loads(scene_edits)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Scene-edit settings are not valid JSON.") from exc
+    if not isinstance(scene_edits, list):
+        raise ValueError("Scene edits must be a list.")
+    if not scene_edits:
+        scene_edits = [{} for _ in durations]
+    if len(scene_edits) != len(durations):
+        raise ValueError("Provide one scene-edit setting for every selected clip.")
+
+    normalized = []
+    for index, (raw, source_duration) in enumerate(zip(scene_edits, durations)):
+        scene_number = index + 1
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"Scene {scene_number} edit settings are invalid.")
+        source_length = _scene_seconds(
+            source_duration, f"Scene {scene_number} source duration", 3600
+        )
+        if source_length <= 0:
+            raise ValueError(f"Scene {scene_number} has no measurable source duration.")
+        trim_start = _scene_seconds(
+            raw.get("trim_start_seconds", 0), f"Scene {scene_number} trim start"
+        )
+        requested_end = _scene_seconds(
+            raw.get("trim_end_seconds", 0), f"Scene {scene_number} trim end"
+        )
+        trim_end = source_length if requested_end == 0 else requested_end
+        if trim_start >= trim_end:
+            raise ValueError(f"Scene {scene_number} trim end must be greater than trim start.")
+        if trim_end > source_length + 0.001:
+            raise ValueError(
+                f"Scene {scene_number} trim end ({trim_end:.3f}s) exceeds its "
+                f"measured source duration ({source_length:.3f}s)."
+            )
+        trim_end = min(trim_end, source_length)
+        transition = str(raw.get("transition_after", "cut") or "cut").lower()
+        if transition not in {"cut", "crossfade"}:
+            raise ValueError(f"Scene {scene_number} transition must be cut or crossfade.")
+        if index == len(durations) - 1 and transition != "cut":
+            raise ValueError("The final scene cannot transition to a following scene.")
+        if transition == "crossfade":
+            transition_duration = _scene_seconds(
+                raw.get("transition_duration_seconds", 0.5),
+                f"Scene {scene_number} crossfade duration", 2
+            )
+            if transition_duration < 0.25:
+                raise ValueError("Crossfade duration must be between 0.25 and 2 seconds.")
+        else:
+            transition_duration = 0
+        normalized.append({
+            "trim_start_seconds": trim_start,
+            "trim_end_seconds": trim_end,
+            "source_duration_seconds": source_length,
+            "duration_seconds": round(trim_end - trim_start, 3),
+            "transition_after": transition,
+            "transition_duration_seconds": transition_duration,
+        })
+
+    for index, edit in enumerate(normalized):
+        incoming = (
+            normalized[index - 1]["transition_duration_seconds"]
+            if index > 0 and normalized[index - 1]["transition_after"] == "crossfade"
+            else 0
+        )
+        outgoing = edit["transition_duration_seconds"] if edit["transition_after"] == "crossfade" else 0
+        if edit["duration_seconds"] <= incoming + outgoing + 0.01:
+            raise ValueError(
+                f"Scene {index + 1} is too short for its incoming and outgoing crossfades."
+            )
+    return normalized
+
+
+def scene_edit_summary(scene_edits):
+    edits = list(scene_edits or [])
+    crossfades = sum(1 for edit in edits if edit.get("transition_after") == "crossfade")
+    duration = sum(float(edit.get("duration_seconds") or 0) for edit in edits)
+    duration -= sum(
+        float(edit.get("transition_duration_seconds") or 0)
+        for edit in edits if edit.get("transition_after") == "crossfade"
     )
+    return {
+        "crossfade_count": crossfades,
+        "final_duration_seconds": round(max(0, duration), 3),
+    }
 
 
-def build_normalize_command(ffmpeg, input_path, output_path, aspect_ratio):
+def video_filter(aspect_ratio, trim_start_seconds=0, trim_end_seconds=None):
+    width, height = output_size(aspect_ratio)
+    filters = []
+    start = _scene_seconds(trim_start_seconds, "Scene trim start")
+    if trim_end_seconds is not None:
+        end = _scene_seconds(trim_end_seconds, "Scene trim end")
+        if end <= start:
+            raise ValueError("Scene trim end must be greater than trim start.")
+        filters.extend([
+            f"trim=start={start:.3f}:end={end:.3f}",
+            "setpts=PTS-STARTPTS",
+        ])
+    elif start:
+        filters.extend([f"trim=start={start:.3f}", "setpts=PTS-STARTPTS"])
+    filters.extend([
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+        "setsar=1", "fps=30", "format=yuv420p",
+    ])
+    return ",".join(filters)
+
+
+def build_normalize_command(ffmpeg, input_path, output_path, aspect_ratio,
+                            scene_edit=None):
+    edit = scene_edit or {}
+    trim_end = edit.get("trim_end_seconds")
     return [
         str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(input_path),
         "-map", "0:v:0",
-        "-vf", video_filter(aspect_ratio),
+        "-vf", video_filter(
+            aspect_ratio, edit.get("trim_start_seconds", 0), trim_end
+        ),
         "-an",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-pix_fmt", "yuv420p", "-threads", "2",
@@ -52,6 +178,46 @@ def build_concat_command(ffmpeg, concat_list, output_path):
         "-map", "0:v:0", "-an", "-c:v", "copy",
         "-movflags", "+faststart", str(output_path),
     ]
+
+
+def build_xfade_command(ffmpeg, input_paths, group_durations,
+                        transition_durations, output_path):
+    """Crossfade already-normalized video groups and encode one silent MP4."""
+    paths = list(input_paths)
+    durations = [float(value) for value in group_durations]
+    transitions = [float(value) for value in transition_durations]
+    if len(paths) < 2 or len(durations) != len(paths) or len(transitions) != len(paths) - 1:
+        raise ValueError("Crossfade inputs, durations and transition settings do not match.")
+    if any(not math.isfinite(value) or value <= 0 for value in durations):
+        raise ValueError("Crossfade group durations must be positive.")
+    if any(not math.isfinite(value) or value < 0.25 or value > 2 for value in transitions):
+        raise ValueError("Crossfade durations must be between 0.25 and 2 seconds.")
+
+    command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y"]
+    for path in paths:
+        command.extend(["-i", str(path)])
+    filters = []
+    current_label = "[0:v:0]"
+    accumulated_duration = durations[0]
+    for index, transition_duration in enumerate(transitions, start=1):
+        offset = accumulated_duration - transition_duration
+        if offset <= 0:
+            raise ValueError("Crossfade offset must be positive.")
+        output_label = f"xfade{index}"
+        filters.append(
+            f"{current_label}[{index}:v:0]xfade=transition=fade:"
+            f"duration={transition_duration:.3f}:offset={offset:.3f}[{output_label}]"
+        )
+        current_label = f"[{output_label}]"
+        accumulated_duration += durations[index] - transition_duration
+    command.extend([
+        "-filter_complex", ";".join(filters),
+        "-map", current_label, "-an",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-pix_fmt", "yuv420p", "-threads", "2",
+        "-movflags", "+faststart", str(output_path),
+    ])
+    return command
 
 
 def _gain_text(value, maximum, label):
@@ -277,7 +443,7 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
                    work_dir, progress_callback=None, runner=subprocess.run,
                    voiceover_path=None, music_path=None,
                    voiceover_gain=1.0, music_gain=0.18,
-                   sound_effects=None,
+                   sound_effects=None, scene_edits=None,
                    voiceover_trim_start_seconds=0,
                    voiceover_trim_end_seconds=0,
                    voiceover_fade_in_seconds=0,
@@ -288,7 +454,7 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
                    music_fade_in_seconds=0,
                    music_fade_out_start_seconds=0,
                    music_fade_out_seconds=0):
-    """Normalize and join clips, then mix optional audio with per-track trim/fade controls."""
+    """Trim, normalize, cut/crossfade scene clips, then mix optional audio."""
     sources = [Path(path) for path in source_paths]
     if not sources:
         raise ValueError("Choose at least one completed scene clip.")
@@ -321,35 +487,119 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
     work.mkdir(parents=True, exist_ok=True)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    normalized_paths = []
+    if scene_edits is None:
+        edits = [
+            {
+                "trim_start_seconds": 0,
+                "trim_end_seconds": None,
+                "duration_seconds": None,
+                "transition_after": "cut",
+                "transition_duration_seconds": 0,
+            }
+            for _ in sources
+        ]
+    else:
+        edits = list(scene_edits)
+        if len(edits) != len(sources):
+            raise ValueError("Provide one validated scene edit for every source clip.")
+        for index, edit in enumerate(edits):
+            if not isinstance(edit, dict):
+                raise ValueError(f"Scene {index + 1} edit settings are invalid.")
+            if edit.get("transition_after", "cut") not in {"cut", "crossfade"}:
+                raise ValueError(f"Scene {index + 1} transition is invalid.")
+            if index == len(edits) - 1 and edit.get("transition_after") == "crossfade":
+                raise ValueError("The final scene cannot crossfade to a following scene.")
 
-    for index, source in enumerate(sources, start=1):
+    normalized_paths = []
+    for index, (source, edit) in enumerate(zip(sources, edits), start=1):
         normalized = work / f"normalized-{index:03d}.mp4"
         if progress_callback:
-            progress_callback(f"Preparing clip {index} of {len(sources)}…")
+            progress_callback(f"Trimming and preparing scene {index} of {len(sources)}…")
         _run(
-            build_normalize_command(ffmpeg_path, source, normalized, aspect_ratio),
+            build_normalize_command(
+                ffmpeg_path, source, normalized, aspect_ratio, scene_edit=edit
+            ),
             timeout=300,
             runner=runner,
         )
         if not normalized.is_file() or normalized.stat().st_size == 0:
-            raise RuntimeError(f"FFmpeg produced no normalized output for clip {index}.")
+            raise RuntimeError(f"FFmpeg produced no normalized output for scene {index}.")
         normalized_paths.append(normalized)
 
-    concat_list = work / "concat-list.txt"
-    concat_list.write_text(
-        "\n".join(_concat_entry(path) for path in normalized_paths) + "\n",
-        encoding="utf-8",
-    )
     has_audio = bool(voiceover_path or music_path or effects)
     joined_video = work / "joined-silent.mp4" if has_audio else destination
-    if progress_callback:
-        progress_callback("Joining the normalized clips into one video…")
-    _run(
-        build_concat_command(ffmpeg_path, concat_list, joined_video),
-        timeout=600,
-        runner=runner,
-    )
+    crossfade_indexes = [
+        index for index, edit in enumerate(edits[:-1])
+        if edit.get("transition_after") == "crossfade"
+    ]
+    if crossfade_indexes:
+        groups = []
+        current_paths = []
+        current_indexes = []
+        for index, normalized in enumerate(normalized_paths):
+            current_paths.append(normalized)
+            current_indexes.append(index)
+            if index in crossfade_indexes:
+                groups.append((current_paths, current_indexes))
+                current_paths = []
+                current_indexes = []
+        if current_paths:
+            groups.append((current_paths, current_indexes))
+
+        group_paths = []
+        group_durations = []
+        transition_durations = []
+        for group_number, (paths, indexes) in enumerate(groups, start=1):
+            if len(paths) == 1:
+                group_path = paths[0]
+            else:
+                group_path = work / f"cut-group-{group_number:03d}.mp4"
+                group_list = work / f"cut-group-{group_number:03d}.txt"
+                group_list.write_text(
+                    "\n".join(_concat_entry(path) for path in paths) + "\n",
+                    encoding="utf-8",
+                )
+                if progress_callback:
+                    progress_callback(f"Joining hard-cut scenes in group {group_number}…")
+                _run(
+                    build_concat_command(ffmpeg_path, group_list, group_path),
+                    timeout=600,
+                    runner=runner,
+                )
+            group_paths.append(group_path)
+            group_durations.append(sum(
+                float(edits[index]["duration_seconds"]) for index in indexes
+            ))
+            last_index = indexes[-1]
+            if last_index in crossfade_indexes:
+                transition_durations.append(
+                    float(edits[last_index]["transition_duration_seconds"])
+                )
+
+        if progress_callback:
+            progress_callback("Applying the selected crossfade transitions…")
+        _run(
+            build_xfade_command(
+                ffmpeg_path, group_paths, group_durations,
+                transition_durations, joined_video
+            ),
+            timeout=600,
+            runner=runner,
+        )
+    else:
+        concat_list = work / "concat-list.txt"
+        concat_list.write_text(
+            "\n".join(_concat_entry(path) for path in normalized_paths) + "\n",
+            encoding="utf-8",
+        )
+        if progress_callback:
+            progress_callback("Joining the normalized clips with hard cuts…")
+        _run(
+            build_concat_command(ffmpeg_path, concat_list, joined_video),
+            timeout=600,
+            runner=runner,
+        )
+
     if not joined_video.is_file() or joined_video.stat().st_size == 0:
         raise RuntimeError("FFmpeg did not produce the joined video.")
 
