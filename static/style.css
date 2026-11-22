@@ -127,3 +127,15 @@
 .video-sequence-track{position:relative;display:block;height:34px;margin-top:10px;overflow:hidden;border:1px solid #31555a;border-radius:6px;background:#10232a}
 .video-sequence-segment{position:absolute;top:4px;bottom:4px;display:flex;align-items:center;justify-content:center;min-width:2px;padding:0 4px;overflow:hidden;border:1px solid #4c9d91;border-radius:4px;background:linear-gradient(135deg,#246c65,#3a8e82);color:#f0fffb;font-size:9px;font-weight:700;white-space:nowrap;text-overflow:ellipsis}
 .video-sequence-playhead{position:absolute;z-index:2;top:0;bottom:0;left:0;width:2px;background:#f2c96e;box-shadow:0 0 5px #f2c96e;pointer-events:none}
+
+
+/* Per-scene assembly trims and transitions */
+.assembly-queue-item{align-items:flex-start}
+.assembly-queue-main{flex:1;min-width:0}
+.scene-edit-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.scene-edit-controls label{display:block;color:#a9c8c5;font-size:9px;letter-spacing:.55px;line-height:1.4}
+.scene-edit-controls input,.scene-edit-controls select{display:block;width:100%;min-width:0;margin-top:5px;padding:8px;background:#0a121c;border:1px solid #42636a;border-radius:6px;color:var(--txt);font:11px 'DM Sans'}
+.scene-edit-controls input:disabled,.scene-edit-controls select:disabled{opacity:.4}
+.queue-actions{flex-shrink:0}
+@media(max-width:820px){.scene-edit-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.assembly-queue-item{align-items:stretch}.scene-edit-controls{grid-template-columns:1fr 1fr}.queue-actions{width:100%}}
