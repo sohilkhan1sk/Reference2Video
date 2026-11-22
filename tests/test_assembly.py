@@ -10,6 +10,9 @@ from assembly import (
     output_size,
     video_filter,
     build_audio_mux_command,
+    build_xfade_command,
+    normalize_scene_edits,
+    scene_edit_summary,
 )
 
 
@@ -288,6 +291,95 @@ class AssemblyTests(unittest.TestCase):
                     voiceover_path=voice,
                     voiceover_fade_out_start_seconds=3601,
                 )
+
+
+    def test_scene_edits_default_to_full_source_and_hard_cuts(self):
+        edits = normalize_scene_edits(None, [5.4, 8])
+        self.assertEqual([item["trim_start_seconds"] for item in edits], [0, 0])
+        self.assertEqual([item["trim_end_seconds"] for item in edits], [5.4, 8])
+        self.assertEqual([item["transition_after"] for item in edits], ["cut", "cut"])
+        self.assertEqual(scene_edit_summary(edits), {
+            "crossfade_count": 0, "final_duration_seconds": 13.4
+        })
+
+    def test_scene_edits_apply_trims_and_crossfade_duration(self):
+        edits = normalize_scene_edits([
+            {"trim_start_seconds": 1, "trim_end_seconds": 4.5,
+             "transition_after": "crossfade", "transition_duration_seconds": 0.5},
+            {"trim_start_seconds": 0.5, "trim_end_seconds": 5},
+        ], [5, 6])
+        self.assertEqual(edits[0]["duration_seconds"], 3.5)
+        self.assertEqual(edits[1]["duration_seconds"], 4.5)
+        self.assertEqual(scene_edit_summary(edits), {
+            "crossfade_count": 1, "final_duration_seconds": 7.5
+        })
+
+    def test_scene_edits_reject_invalid_bounds_and_last_scene_transition(self):
+        with self.assertRaisesRegex(ValueError, "exceeds"):
+            normalize_scene_edits([{"trim_end_seconds": 6}], [5])
+        with self.assertRaisesRegex(ValueError, "final scene"):
+            normalize_scene_edits([{"transition_after": "crossfade"}], [5])
+        with self.assertRaisesRegex(ValueError, "greater than"):
+            normalize_scene_edits([{"trim_start_seconds": 3, "trim_end_seconds": 3}], [5])
+
+    def test_scene_edits_require_enough_frames_for_adjacent_crossfades(self):
+        with self.assertRaisesRegex(ValueError, "too short"):
+            normalize_scene_edits([
+                {"transition_after": "crossfade", "transition_duration_seconds": 1.5},
+                {"transition_after": "crossfade", "transition_duration_seconds": 1.5},
+                {},
+            ], [2.5, 2.5, 5])
+
+    def test_normalize_command_trims_before_scaling(self):
+        command = build_normalize_command(
+            "ffmpeg", "source.mp4", "trimmed.mp4", "16:9",
+            scene_edit={"trim_start_seconds": 1.25, "trim_end_seconds": 4.75},
+        )
+        video_graph = command[command.index("-vf") + 1]
+        self.assertIn("trim=start=1.250:end=4.750", video_graph)
+        self.assertLess(video_graph.index("trim="), video_graph.index("scale="))
+        self.assertIn("setpts=PTS-STARTPTS", video_graph)
+
+    def test_xfade_command_calculates_cumulative_offsets(self):
+        command = build_xfade_command(
+            "ffmpeg", ["group-a.mp4", "group-b.mp4", "group-c.mp4"],
+            [4, 5, 6], [0.5, 0.75], "final.mp4",
+        )
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("duration=0.500:offset=3.500", graph)
+        self.assertIn("duration=0.750:offset=7.750", graph)
+        self.assertEqual(command.count("-i"), 3)
+        self.assertIn("libx264", command)
+        self.assertEqual(command[-1], "final.mp4")
+
+    def test_assembly_groups_hard_cuts_and_applies_crossfade(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources = [root / f"scene-{index}.mp4" for index in range(3)]
+            for path in sources:
+                path.write_bytes(b"source")
+            edits = normalize_scene_edits([
+                {"transition_after": "crossfade", "transition_duration_seconds": 0.5},
+                {},
+                {},
+            ], [4, 5, 6])
+            output = root / "exports" / "final.mp4"
+            calls = []
+
+            def fake_runner(command, **kwargs):
+                calls.append(command)
+                Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+                Path(command[-1]).write_bytes(b"fake-mp4")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            assemble_clips(
+                sources, output, "16:9", "ffmpeg", root / "work",
+                runner=fake_runner, scene_edits=edits,
+            )
+            self.assertEqual(len(calls), 5)
+            xfade_graph = calls[-1][calls[-1].index("-filter_complex") + 1]
+            self.assertIn("xfade=transition=fade:duration=0.500:offset=3.500", xfade_graph)
+            self.assertTrue(output.is_file())
 
     def test_empty_or_missing_source_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
