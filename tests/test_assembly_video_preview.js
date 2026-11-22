@@ -79,3 +79,8 @@ test("crossfade duration is checked against incoming and outgoing overlaps",()=>
  });
  assert.ok(plan.errors.some(error=>error.includes("too short")));
 });
+
+test("negative scene trim values are reported instead of silently normalized",()=>{
+ const plan=buildVideoSequencePlan([job("a",5)],{a:{trim_start_seconds:-1}});
+ assert.ok(plan.errors.some(error=>error.includes("finite non-negative")));
+});
