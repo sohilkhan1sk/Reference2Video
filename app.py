@@ -4,7 +4,7 @@ from flask import Flask, render_template, request, jsonify, send_file, redirect
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
-from assembly import assemble_clips
+from assembly import assemble_clips, normalize_scene_edits, scene_edit_summary
 from media_probe import probe_media
 from job_store import (
     init_job_store, create_video_job, update_video_job,
@@ -381,7 +381,7 @@ def _assembly_file_url(assembly_id, download=False):
 def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
                     voiceover_path=None, music_path=None,
                     voiceover_gain=1.0, music_gain=0.18,
-                    sound_effects=None, audio_options=None):
+                    sound_effects=None, audio_options=None, scene_edits=None):
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
     output_path = ASSEMBLY_DIR / f"{assembly_id}.mp4"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -428,6 +428,7 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
             voiceover_gain=voiceover_gain,
             music_gain=music_gain,
             sound_effects=sound_effects,
+            scene_edits=scene_edits,
             **(audio_options or {}),
         )
         if not output_path.is_file() or output_path.stat().st_size < 1024:
@@ -877,10 +878,19 @@ def create_assembly():
     if uploaded_sfx_fields != expected_sfx_fields:
         return jsonify(error="Each timed SFX cue must have exactly one matching audio file."), 400
 
+    source_durations = []
     for index, source_job_id in enumerate(source_job_ids, start=1):
         source_job = get_video_job_record(source_job_id)
         if not source_job or source_job.get("status") != "COMPLETED":
             return jsonify(error=f"Selected clip {index} is not a completed generation job."), 409
+        source_duration = source_job.get("actual_duration_seconds") or source_job.get("duration")
+        try:
+            source_duration = float(source_duration)
+        except (TypeError, ValueError):
+            return jsonify(error=f"Selected clip {index} has no usable measured or requested duration. Reload history before assembling."), 409
+        if not math.isfinite(source_duration) or source_duration <= 0:
+            return jsonify(error=f"Selected clip {index} has no usable measured or requested duration. Reload history before assembling."), 409
+        source_durations.append(source_duration)
         local_path = GENERATED_DIR / f"{source_job_id}.mp4"
         stored_uri = source_job.get("video_url") or ""
         if local_path.is_file() and local_path.stat().st_size > 0:
@@ -892,6 +902,12 @@ def create_assembly():
             except Exception:
                 app.logger.exception("Could not verify source clip %s", source_job_id)
         return jsonify(error=f"Selected clip {index} is not available. Reload history or regenerate the missing clip."), 409
+
+    try:
+        scene_edits = normalize_scene_edits(data.get("scene_edits"), source_durations)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    scene_summary = scene_edit_summary(scene_edits)
 
     assembly_id = uuid.uuid4().hex
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
@@ -940,6 +956,7 @@ def create_assembly():
             }
             for cue in sound_effects
         ],
+        "scene_edits": scene_edits,
     }
     try:
         create_assembly_job(
@@ -962,6 +979,7 @@ def create_assembly():
                     **{f"voiceover_{key}": value for key, value in voiceover_options.items()},
                     **{f"music_{key}": value for key, value in music_options.items()},
                 },
+                scene_edits,
             ),
             daemon=True,
         )
@@ -983,6 +1001,8 @@ def create_assembly():
         aspect_ratio=aspect_ratio, source_count=len(source_job_ids),
         has_voiceover=bool(voiceover_path), has_music=bool(music_path),
         has_sound_effects=bool(sound_effects), sound_effect_count=len(sound_effects),
+        crossfade_count=scene_summary["crossfade_count"],
+        final_duration_seconds=scene_summary["final_duration_seconds"],
         provider="FFmpeg (local server processing)", estimated_cost_usd=0
     ), 202
 
@@ -1014,6 +1034,8 @@ def get_assembly_status(assembly_id):
         has_music=bool(audio_tracks.get("music")),
         has_sound_effects=bool(audio_tracks.get("sound_effects")),
         sound_effect_count=len(audio_tracks.get("sound_effects") or []),
+        crossfade_count=scene_edit_summary(audio_tracks.get("scene_edits") or [])["crossfade_count"],
+        final_duration_seconds=scene_edit_summary(audio_tracks.get("scene_edits") or [])["final_duration_seconds"],
         video_url=_assembly_file_url(assembly_id, False) if completed else None,
         download_url=_assembly_file_url(assembly_id, True) if completed else None,
         storage_backend="s3" if str(job.get("output_uri") or "").startswith("s3://") else "local",
