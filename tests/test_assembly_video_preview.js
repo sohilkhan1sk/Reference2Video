@@ -37,3 +37,45 @@ test("invalid or missing requested and measured durations are not guessed",()=>{
  assert.equal(resolveClipDuration(job("bad",0,{actual_duration_seconds:-1})),null);
  assert.equal(resolveClipDuration(null),null);
 });
+
+test("scene trims shorten the preview sequence and seek into the source clip",()=>{
+ const plan=buildVideoSequencePlan([job("a",8),job("b",6)],{
+  a:{trim_start_seconds:1,trim_end_seconds:5},
+  b:{trim_start_seconds:2,trim_end_seconds:0}
+ });
+ assert.equal(plan.durationSeconds,8);
+ assert.equal(plan.segments[0].durationSeconds,4);
+ assert.equal(plan.segments[0].trimStartSeconds,1);
+ assert.equal(locateSegmentAtTime(plan,2).offsetSeconds,3);
+ assert.equal(locateSegmentAtTime(plan,4).segment.jobId,"b");
+ assert.equal(locateSegmentAtTime(plan,4).offsetSeconds,2);
+});
+
+test("crossfades overlap adjacent scenes and shorten final duration",()=>{
+ const plan=buildVideoSequencePlan([job("a",5),job("b",7),job("c",4)],{
+  a:{transition_after:"crossfade",transition_duration_seconds:0.5},
+  b:{transition_after:"crossfade",transition_duration_seconds:1},
+  c:{}
+ });
+ assert.equal(plan.transitionCount,2);
+ assert.equal(plan.durationSeconds,14.5);
+ assert.equal(plan.segments[1].startSeconds,4.5);
+ assert.equal(plan.segments[2].startSeconds,10.5);
+ assert.equal(locateSegmentAtTime(plan,4.6).segment.jobId,"a");
+ assert.equal(locateSegmentAtTime(plan,4.8).segment.jobId,"b");
+});
+
+test("invalid trims and impossible final-scene crossfades are reported",()=>{
+ const trim=buildVideoSequencePlan([job("a",5)],{a:{trim_start_seconds:6}});
+ assert.ok(trim.errors.some(error=>error.includes("trim")));
+ const transition=buildVideoSequencePlan([job("a",5)],{a:{transition_after:"crossfade"}});
+ assert.ok(transition.errors.some(error=>error.includes("final scene")));
+});
+
+test("crossfade duration is checked against incoming and outgoing overlaps",()=>{
+ const plan=buildVideoSequencePlan([job("a",2.5),job("b",2.5),job("c",5)],{
+  a:{transition_after:"crossfade",transition_duration_seconds:1.5},
+  b:{transition_after:"crossfade",transition_duration_seconds:1.5}
+ });
+ assert.ok(plan.errors.some(error=>error.includes("too short")));
+});
