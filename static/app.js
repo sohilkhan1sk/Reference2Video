@@ -1,5 +1,5 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
-let currentData=null,selectedIdea=0,assemblyQueue=[],recentJobsById={},assemblyVideoPreviewState=null,assemblyVideoSyncRaf=0;
+let currentData=null,selectedIdea=0,assemblyQueue=[],assemblyEditsById={},recentJobsById={},assemblyVideoPreviewState=null,assemblyVideoSyncRaf=0;
 fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
@@ -55,8 +55,20 @@ const status=document.getElementById('assemblyStatus');
 if(!job||!job.artifact_available){if(status)status.textContent='That clip is not currently available for assembly.';return;}
 if(assemblyQueue.includes(jobId)){if(status)status.textContent='That clip is already in the assembly queue.';return;}
 assemblyQueue.push(jobId);
+if(!assemblyEditsById[jobId])assemblyEditsById[jobId]={trim_start_seconds:0,trim_end_seconds:0,transition_after:'cut',transition_duration_seconds:0.5};
 renderAssemblyQueue();
-if(status)status.textContent='Added clip to the assembly queue. Click Add to assembly on other clips, then reorder them.';
+if(status)status.textContent='Added clip. Set optional trim points and the transition to the next scene; the final scene always ends with a cut.';
+}
+function collectSceneEdits(){
+return assemblyQueue.map((jobId,index)=>{
+const edit=assemblyEditsById[jobId]||{};
+return {
+ trim_start_seconds:Number(edit.trim_start_seconds||0),
+ trim_end_seconds:Number(edit.trim_end_seconds||0),
+ transition_after:index===assemblyQueue.length-1?'cut':(edit.transition_after||'cut'),
+ transition_duration_seconds:Number(edit.transition_duration_seconds||0.5)
+};
+});
 }
 function renderAssemblyQueue(){
 const box=document.getElementById('assemblyQueue'),button=document.getElementById('assembleBtn');
@@ -72,12 +84,26 @@ box.innerHTML=assemblyQueue.map((jobId,index)=>{
 const job=recentJobsById[jobId]||{};
 const timing=window.Reference2VideoVideoPreview.resolveClipDuration(job);
 const durationLabel=timing?timing.durationSeconds.toFixed(2)+' sec '+(timing.source==='measured'?'measured':'requested'):'duration unavailable';
-const label='Clip '+String(index+1).padStart(2,'0')+' · '+durationLabel+' · '+(job.aspect_ratio||'format unknown');
-return '<div class="assembly-queue-item"><strong>'+esc(label)+'</strong><div class="queue-actions"><button type="button" class="secondary queue-up" data-index="'+index+'" '+(index===0?'disabled':'')+'>↑</button><button type="button" class="secondary queue-down" data-index="'+index+'" '+(index===assemblyQueue.length-1?'disabled':'')+'>↓</button><button type="button" class="secondary queue-remove" data-index="'+index+'">Remove</button></div></div>';
+const label='Scene '+String(index+1).padStart(2,'0')+' · '+durationLabel+' · '+(job.aspect_ratio||'format unknown');
+const edit=assemblyEditsById[jobId]||{trim_start_seconds:0,trim_end_seconds:0,transition_after:'cut',transition_duration_seconds:0.5};
+const last=index===assemblyQueue.length-1;
+const transition=last?'cut':(edit.transition_after||'cut');
+return '<div class="assembly-queue-item"><div class="assembly-queue-main"><strong>'+esc(label)+'</strong><div class="scene-edit-controls"><label>TRIM IN (SEC)<input type="number" min="0" max="3600" step="0.1" data-scene-edit="trim_start_seconds" data-job="'+esc(jobId)+'" value="'+esc(edit.trim_start_seconds||0)+'"></label><label>TRIM OUT (SEC) · 0 = FULL<input type="number" min="0" max="3600" step="0.1" data-scene-edit="trim_end_seconds" data-job="'+esc(jobId)+'" value="'+esc(edit.trim_end_seconds||0)+'"></label><label>TRANSITION TO NEXT<select data-scene-edit="transition_after" data-job="'+esc(jobId)+'" '+(last?'disabled':'')+'><option value="cut" '+(transition==='cut'?'selected':'')+'>Hard cut</option><option value="crossfade" '+(transition==='crossfade'?'selected':'')+'>Crossfade</option></select></label><label>CROSSFADE (SEC)<input type="number" min="0.25" max="2" step="0.05" data-scene-edit="transition_duration_seconds" data-job="'+esc(jobId)+'" value="'+esc(edit.transition_duration_seconds||0.5)+'" '+(last||transition!=='crossfade'?'disabled':'')+'></label></div></div><div class="queue-actions"><button type="button" class="secondary queue-up" data-index="'+index+'" '+(index===0?'disabled':'')+'>↑</button><button type="button" class="secondary queue-down" data-index="'+index+'" '+(last?'disabled':'')+'>↓</button><button type="button" class="secondary queue-remove" data-index="'+index+'">Remove</button></div></div>';
 }).join('');
 box.querySelectorAll('.queue-up').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),-1)));
 box.querySelectorAll('.queue-down').forEach(button=>button.addEventListener('click',()=>moveAssemblyItem(Number(button.dataset.index),1)));
 box.querySelectorAll('.queue-remove').forEach(button=>button.addEventListener('click',()=>{assemblyQueue.splice(Number(button.dataset.index),1);renderAssemblyQueue();}));
+box.querySelectorAll('[data-scene-edit]').forEach(input=>{
+ const update=()=>{
+  const id=input.dataset.job,field=input.dataset.sceneEdit;
+  const value=input.tagName==='SELECT'?input.value:Number(input.value||0);
+  assemblyEditsById[id]=Object.assign({},assemblyEditsById[id]||{}, {[field]:value});
+  if(field==='transition_after')renderAssemblyQueue();
+  else{renderAssemblyVideoPreview();renderAudioTimeline();}
+ };
+ if(input.tagName==='SELECT')input.addEventListener('change',update);
+ else input.addEventListener('input',update);
+});
 if(button)button.disabled=false;
 renderAssemblyVideoPreview();
 renderAudioTimeline();
@@ -251,12 +277,16 @@ function startAssemblyVideoSyncLoop(){
 }
 function renderAssemblyVideoPreview(){
  const panel=document.getElementById('assemblyVideoPreviewPanel');if(!panel)return;
- const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(assemblyQueue.map(id=>recentJobsById[id]));
+ const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(
+  assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
+ );
  if(!plan.segments.length){assemblyVideoPreviewState=null;panel.innerHTML='<div class="video-preview-empty">Add available completed clips from history to preview the scene sequence.</div>';return;}
  const segments=plan.segments.map(segment=>'<span class="video-sequence-segment" style="left:'+segment.startPercent+'%;width:'+segment.widthPercent+'%" title="'+esc(segment.title)+' · '+window.Reference2VideoTimeline.formatTime(segment.durationSeconds)+' · '+segment.durationSource+' duration">'+esc(segment.title)+'</span>').join('');
- const timingNote=plan.requestedFallbackCount===0
-  ?'All scene boundaries use ffprobe-measured MP4 durations.'
-  :'Measured duration for '+plan.measuredCount+' of '+plan.segments.length+' clips; '+plan.requestedFallbackCount+' clip(s) use the requested duration until ffprobe metadata is available.';
+ const timingNote=(plan.requestedFallbackCount===0
+  ?'All source lengths use ffprobe-measured MP4 durations.'
+  :'Measured duration for '+plan.measuredCount+' of '+plan.segments.length+' clips; '+plan.requestedFallbackCount+' clip(s) use the requested duration.')
+  +(plan.transitionCount?' '+plan.transitionCount+' FFmpeg crossfade(s) shorten the final timeline; the browser monitor switches scenes at each transition midpoint.':'')
+  +(plan.errors.length?' Edit warning: '+plan.errors.join(' '):'');
  panel.innerHTML='<div class="assembly-video-frame"><video id="assemblyVideoMonitor" muted playsinline preload="metadata"></video></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">'+timingNote+' Source clip audio is muted to avoid double playback.</small>';
  const video=panel.querySelector('#assemblyVideoMonitor');assemblyVideoPreviewState={plan,video,status:panel.querySelector('#assemblyVideoStatus'),activeJobId:null,currentSeconds:0,shouldPlay:false,loading:false};syncAssemblyVideoPreview(0,false);
 }
@@ -424,10 +454,10 @@ async function renderAudioTimeline(){
  if(!root)return;
  stopAudioPreview();
  const revision=++audioTimelineRevision;
- const totalDuration=assemblyQueue.reduce((sum,id)=>{
-  const timing=window.Reference2VideoVideoPreview.resolveClipDuration(recentJobsById[id]);
-  return sum+(timing?timing.durationSeconds:0);
- },0);
+ const scenePlan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(
+  assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
+ );
+ const totalDuration=scenePlan.durationSeconds;
  if(!assemblyQueue.length){
   root.innerHTML='<div class="audio-timeline-empty">Add completed clips from history to build the timeline preview.</div>';
   return;
@@ -638,13 +668,20 @@ async function createAssembly(){
  if(musicProcessing.error){if(status)status.textContent=musicProcessing.error;return;}
  const tracks=[voiceover?'voiceover':null,music?'background music':null,soundEffects.length?(soundEffects.length+' timed SFX cue(s)'):null].filter(Boolean);
  const trackSummary=tracks.length?tracks.join(' + '):'silent audio';
- if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4 with '+trackSummary+'? Voiceover/music start at 00:00; each SFX cue starts at its selected timestamp. FFmpeg uses the server and does not call a paid AI provider.'))return;
+ const sceneEdits=collectSceneEdits();
+ const scenePlan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(
+  assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
+ );
+ if(scenePlan.errors.length){if(status)status.textContent=scenePlan.errors.join(' ');return;}
+ const crossfadeSummary=scenePlan.transitionCount?(' with '+scenePlan.transitionCount+' crossfade(s)'):' with hard cuts';
+ if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4'+crossfadeSummary+'?\n\nTrimmed timeline: '+scenePlan.durationSeconds.toFixed(2)+' seconds.\nAudio: '+trackSummary+'.\n\nFFmpeg uses the server and does not call a paid AI provider.'))return;
  button.disabled=true;
  output.innerHTML='<div class="generation-status"><span class="spinner"></span><span>Starting FFmpeg assembly…</span></div>';
  if(status)status.textContent='Preparing '+trackSummary+'. No paid video-generation request is sent.';
  try{
   const form=new FormData();
   form.append('job_ids',JSON.stringify(assemblyQueue.slice()));
+  form.append('scene_edits',JSON.stringify(sceneEdits));
   form.append('aspect_ratio',aspect);
   form.append('voiceover_gain',String(voiceoverGain));
   form.append('music_gain',String(musicGain));
