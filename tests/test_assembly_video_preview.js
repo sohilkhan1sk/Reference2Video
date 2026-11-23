@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import "../static/assembly_video_preview.js";
-const {buildVideoSequencePlan,locateSegmentAtTime,isGeneratedVideoPath,resolveClipDuration}=globalThis.Reference2VideoVideoPreview;
+const {buildVideoSequencePlan,locateSegmentAtTime,locateLayersAtTime,isGeneratedVideoPath,resolveClipDuration}=globalThis.Reference2VideoVideoPreview;
 function job(id,duration,overrides={}){return {job_id:id,status:"COMPLETED",artifact_available:true,video_url:"/api/generated/"+id,duration,...overrides};}
 test("sequence preserves queue order and cumulative positions",()=>{
  const p=buildVideoSequencePlan([job("a",5),job("b",8),job("c",10)]);
@@ -83,4 +83,59 @@ test("crossfade duration is checked against incoming and outgoing overlaps",()=>
 test("negative scene trim values are reported instead of silently normalized",()=>{
  const plan=buildVideoSequencePlan([job("a",5)],{a:{trim_start_seconds:-1}});
  assert.ok(plan.errors.some(error=>error.includes("finite non-negative")));
+});
+
+
+test("dual-layer preview keeps one fully opaque scene outside a transition",()=>{
+ const plan=buildVideoSequencePlan([job("a",5),job("b",7)],{a:{transition_after:"crossfade",transition_duration_seconds:1}});
+ const before=locateLayersAtTime(plan,3.9);
+ assert.equal(before.isCrossfade,false);
+ assert.equal(before.layers.length,1);
+ assert.equal(before.layers[0].segment.jobId,"a");
+ assert.equal(before.layers[0].opacity,1);
+ const after=locateLayersAtTime(plan,5);
+ assert.equal(after.isCrossfade,false);
+ assert.equal(after.layers.length,1);
+ assert.equal(after.layers[0].segment.jobId,"b");
+ assert.equal(after.layers[0].offsetSeconds,1);
+});
+
+test("crossfade starts with outgoing visible and incoming prepared at zero opacity",()=>{
+ const plan=buildVideoSequencePlan([job("a",5),job("b",7)],{a:{transition_after:"crossfade",transition_duration_seconds:1}});
+ const frame=locateLayersAtTime(plan,4);
+ assert.equal(frame.isCrossfade,true);
+ assert.equal(frame.progress,0);
+ assert.deepEqual(frame.layers.map(layer=>layer.segment.jobId),["a","b"]);
+ assert.deepEqual(frame.layers.map(layer=>layer.opacity),[1,0]);
+ assert.deepEqual(frame.layers.map(layer=>layer.offsetSeconds),[4,0]);
+});
+
+test("crossfade opacity advances linearly while both clips seek on the shared timeline",()=>{
+ const plan=buildVideoSequencePlan([job("a",5),job("b",7)],{a:{transition_after:"crossfade",transition_duration_seconds:1}});
+ const frame=locateLayersAtTime(plan,4.25);
+ assert.equal(frame.isCrossfade,true);
+ assert.equal(frame.progress,0.25);
+ assert.deepEqual(frame.layers.map(layer=>layer.opacity),[1,0.25]);
+ assert.deepEqual(frame.layers.map(layer=>layer.offsetSeconds),[4.25,0.25]);
+ assert.deepEqual(frame.layers.map(layer=>layer.role),["outgoing","incoming"]);
+});
+
+test("crossfade midpoint uses equal visual contribution under source-over compositing",()=>{
+ const plan=buildVideoSequencePlan([job("a",5),job("b",7)],{a:{transition_after:"crossfade",transition_duration_seconds:1}});
+ const frame=locateLayersAtTime(plan,4.5);
+ assert.equal(frame.isCrossfade,true);
+ assert.equal(frame.progress,0.5);
+ assert.equal(frame.layers[0].opacity,1);
+ assert.equal(frame.layers[1].opacity,0.5);
+});
+
+test("invalid edit plans do not attempt a two-layer blend",()=>{
+ const plan=buildVideoSequencePlan([job("a",2),job("b",2)],{
+  a:{transition_after:"crossfade",transition_duration_seconds:1.5},
+  b:{trim_start_seconds:3}
+ });
+ assert.ok(plan.errors.length>0);
+ const frame=locateLayersAtTime(plan,0.75);
+ assert.equal(frame.isCrossfade,false);
+ assert.equal(frame.layers.length,1);
 });
