@@ -213,63 +213,108 @@ function stopAudioPreview(preservePosition=true){
 
 
 function stopAssemblyVideoSyncLoop(){if(assemblyVideoSyncRaf)window.cancelAnimationFrame(assemblyVideoSyncRaf);assemblyVideoSyncRaf=0;}
-function pauseAssemblyVideoPreview(){const state=assemblyVideoPreviewState;if(!state)return;state.shouldPlay=false;if(state.video&&!state.video.paused)state.video.pause();}
+function pauseAssemblyVideoPreview(){
+ const state=assemblyVideoPreviewState;
+ if(!state)return;
+ state.shouldPlay=false;
+ (state.layers||[]).forEach(slot=>{
+  slot.playPending=false;
+  if(slot.video&&!slot.video.paused)slot.video.pause();
+ });
+}
 function syncAssemblyVideoPreview(seconds,shouldPlay){
  const state=assemblyVideoPreviewState;
- if(!state||!state.video)return;
- const located=window.Reference2VideoVideoPreview.locateSegmentAtTime(state.plan,seconds);
- state.currentSeconds=Math.max(0,Number(seconds)||0);
+ if(!state||!Array.isArray(state.layers))return;
+ const frame=window.Reference2VideoVideoPreview.locateLayersAtTime(state.plan,seconds);
+ state.currentSeconds=frame.timeSeconds;
  const wasPlaying=state.shouldPlay;
  state.shouldPlay=Boolean(shouldPlay);
- if(state.shouldPlay&&!wasPlaying)state.playBlocked=false;
- if(!located){pauseAssemblyVideoPreview();return;}
- const segment=located.segment,video=state.video;
- const activate=()=>{
-  if(assemblyVideoPreviewState!==state)return;
-  const current=window.Reference2VideoVideoPreview.locateSegmentAtTime(state.plan,state.currentSeconds);
-  if(!current||current.segment.jobId!==state.activeJobId)return;
-  state.loading=false;
-  const offset=current.offsetSeconds;
-  const safeOffset=Number.isFinite(video.duration)&&video.duration>0
-   ?Math.min(offset,Math.max(0,video.duration-0.04)):offset;
-  const now=Date.now();
-  if(!state.shouldPlay||!state.lastSyncAt||now-state.lastSyncAt>220){
-   state.lastSyncAt=now;
-   const drift=Math.abs((video.currentTime||0)-safeOffset);
-   if(drift>(state.shouldPlay?0.65:0.04)){try{video.currentTime=safeOffset;}catch(_){}}
-  }
-  if(state.shouldPlay&&!state.playBlocked&&video.paused){
-   const result=video.play();
-   if(result&&typeof result.catch==='function')result.catch(()=>{
-    state.playBlocked=true;
-    if(state.status)state.status.textContent='The browser blocked video playback. Press Play again or check browser media permissions.';
-   });
-  }else if(!state.shouldPlay&&!video.paused)video.pause();
-  if(state.status&&state.statusJobId!==segment.jobId){
-   state.statusJobId=segment.jobId;
-   state.status.textContent='Scene '+(segment.index+1)+' of '+state.plan.segments.length+' · source video muted; selected audio tracks play from the local preview.';
-  }
- };
- if(state.activeJobId!==segment.jobId){
-  state.activeJobId=segment.jobId;
-  state.statusJobId=null;
-  state.lastSyncAt=0;
-  state.loading=true;
-  if(state.status)state.status.textContent='Loading scene '+(segment.index+1)+' of '+state.plan.segments.length+'…';
-  video.pause();
-  video.onloadedmetadata=activate;
-  video.onerror=()=>{
-   if(assemblyVideoPreviewState!==state)return;
-   state.loading=false;state.shouldPlay=false;
-   if(state.status)state.status.textContent='Could not load scene '+(segment.index+1)+'. Reload history and confirm its MP4 is still available.';
-   stopAudioPreview(false);
-  };
-  video.src=segment.url;
-  video.load();
-  if(video.readyState>=1)activate();
-  return;
+ if(state.shouldPlay&&!wasPlaying){
+  state.layers.forEach(slot=>{slot.playBlocked=false;slot.lastSyncAt=0;});
  }
- if(video.readyState>=1)activate();
+ const activeIds=new Set(frame.layers.map(layer=>layer.segment.jobId));
+ state.layers.forEach(slot=>{
+  if(!activeIds.has(slot.jobId)){
+   slot.video.style.opacity="0";
+   slot.playPending=false;
+   if(!slot.video.paused)slot.video.pause();
+  }
+ });
+ const used=new Set();
+ frame.layers.forEach(descriptor=>{
+  const jobId=descriptor.segment.jobId;
+  let slot=state.layers.find(item=>item.jobId===jobId);
+  if(!slot)slot=state.layers.find(item=>!used.has(item)&&!activeIds.has(item.jobId));
+  if(!slot)slot=state.layers.find(item=>!used.has(item));
+  if(!slot)return;
+  used.add(slot);
+  const video=slot.video;
+  video.style.opacity=String(Math.max(0,Math.min(1,descriptor.opacity)));
+  video.style.zIndex=descriptor.role==="incoming"?"2":"1";
+  if(slot.jobId!==jobId){
+   slot.jobId=jobId;
+   slot.loading=true;
+   slot.lastSyncAt=0;
+   slot.playBlocked=false;
+   slot.playPending=false;
+   video.pause();
+   video.onerror=()=>{
+    if(assemblyVideoPreviewState!==state||slot.jobId!==jobId)return;
+    slot.loading=false;
+    state.shouldPlay=false;
+    if(state.status)state.status.textContent="Could not load "+descriptor.segment.title+". Reload history and confirm its MP4 is still available.";
+    stopAudioPreview(false);
+   };
+   video.onloadedmetadata=()=>{
+    if(assemblyVideoPreviewState!==state||slot.jobId!==jobId)return;
+    slot.loading=false;
+    syncAssemblyVideoPreview(state.currentSeconds,state.shouldPlay);
+   };
+   video.src=descriptor.segment.url;
+   video.load();
+   if(video.readyState>=1)slot.loading=false;
+  }
+  if(slot.loading)return;
+  const safeOffset=Number.isFinite(video.duration)&&video.duration>0
+   ?Math.min(descriptor.offsetSeconds,Math.max(0,video.duration-0.04))
+   :descriptor.offsetSeconds;
+  const now=Date.now();
+  if(!state.shouldPlay||!slot.lastSyncAt||now-slot.lastSyncAt>220){
+   slot.lastSyncAt=now;
+   const drift=Math.abs((video.currentTime||0)-safeOffset);
+   if(drift>(state.shouldPlay?0.65:0.035)){try{video.currentTime=safeOffset;}catch(_){}}
+  }
+  if(state.shouldPlay&&!slot.playBlocked&&video.paused&&!slot.playPending){
+   slot.playPending=true;
+   try{
+    const result=video.play();
+    if(result&&typeof result.then==="function"){
+     result.then(()=>{if(slot.jobId===jobId)slot.playPending=false;}).catch(()=>{
+      if(slot.jobId!==jobId)return;
+      slot.playPending=false;
+      slot.playBlocked=true;
+      if(state.status)state.status.textContent="The browser blocked video playback. Press Play again or check browser media permissions.";
+     });
+    }else slot.playPending=false;
+   }catch(_){
+    slot.playPending=false;
+    slot.playBlocked=true;
+    if(state.status)state.status.textContent="The browser could not start video playback. Press Play again.";
+   }
+  }else if(!state.shouldPlay){
+   slot.playPending=false;
+   if(!video.paused)video.pause();
+  }
+ });
+ if(state.status){
+  let message="Ready · "+state.plan.segments.length+" scene clip(s) queued.";
+  if(frame.isCrossfade&&frame.layers.length===2){
+   message="Crossfade · Scene "+(frame.layers[0].segment.index+1)+" → Scene "+(frame.layers[1].segment.index+1)+" · "+Math.round(frame.progress*100)+"%";
+  }else if(frame.layers.length){
+   message="Scene "+(frame.layers[0].segment.index+1)+" of "+state.plan.segments.length+" · source video muted; selected audio tracks play from the local preview.";
+  }
+  if(state.status.textContent!==message)state.status.textContent=message;
+ }
 }
 function startAssemblyVideoSyncLoop(){
  stopAssemblyVideoSyncLoop();
@@ -278,6 +323,7 @@ function startAssemblyVideoSyncLoop(){
 }
 function renderAssemblyVideoPreview(){
  const panel=document.getElementById('assemblyVideoPreviewPanel');if(!panel)return;
+ pauseAssemblyVideoPreview();
  const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(
   assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
  );
@@ -286,10 +332,22 @@ function renderAssemblyVideoPreview(){
  const timingNote=(plan.requestedFallbackCount===0
   ?'All source lengths use ffprobe-measured MP4 durations.'
   :'Measured duration for '+plan.measuredCount+' of '+plan.segments.length+' clips; '+plan.requestedFallbackCount+' clip(s) use the requested duration.')
-  +(plan.transitionCount?' '+plan.transitionCount+' FFmpeg crossfade(s) shorten the final timeline; the browser monitor switches scenes at each transition midpoint.':'')
+  +(plan.transitionCount?' '+plan.transitionCount+' crossfade(s) use a true two-layer opacity blend in this browser preview and in the FFmpeg export.':'')
   +(plan.errors.length?' Edit warning: '+plan.errors.join(' '):'');
- panel.innerHTML='<div class="assembly-video-frame"><video id="assemblyVideoMonitor" muted playsinline preload="metadata"></video></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">'+timingNote+' Source clip audio is muted to avoid double playback.</small>';
- const video=panel.querySelector('#assemblyVideoMonitor');assemblyVideoPreviewState={plan,video,status:panel.querySelector('#assemblyVideoStatus'),activeJobId:null,currentSeconds:0,shouldPlay:false,loading:false};syncAssemblyVideoPreview(0,false);
+ const aspect=document.getElementById('assemblyAspect')?.value||'16:9';
+ const frameRatio=aspect==='9:16'?'9 / 16':'16 / 9';
+ const frameWidth=aspect==='9:16'?'min(100%, 236px)':'min(100%, 746px)';
+ panel.innerHTML='<div class="assembly-video-frame" style="aspect-ratio:'+frameRatio+';width:'+frameWidth+'"><video id="assemblyVideoMonitor" class="assembly-video-layer layer-primary" muted playsinline preload="metadata" aria-label="Outgoing scene preview"></video><video id="assemblyVideoMonitorSecondary" class="assembly-video-layer layer-secondary" muted playsinline preload="metadata" aria-label="Incoming scene preview"></video></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">'+timingNote+' Source clip audio is muted to avoid double playback.</small>';
+ const videos=[panel.querySelector('#assemblyVideoMonitor'),panel.querySelector('#assemblyVideoMonitorSecondary')];
+ videos.forEach(video=>{video.muted=true;video.playsInline=true;});
+ assemblyVideoPreviewState={
+  plan,
+  layers:videos.map(video=>({video,jobId:null,lastSyncAt:0,loading:false,playBlocked:false,playPending:false})),
+  status:panel.querySelector('#assemblyVideoStatus'),
+  currentSeconds:0,
+  shouldPlay:false
+ };
+ syncAssemblyVideoPreview(0,false);
 }
 
 function drawAudioWaveform(canvas,buffer,spec,lane){
@@ -727,6 +785,7 @@ button.disabled=false;
 }
 }
 document.getElementById('assembleBtn')?.addEventListener('click',createAssembly);
+document.getElementById('assemblyAspect')?.addEventListener('change',renderAssemblyVideoPreview);
 [['voiceoverGain','voiceoverGainValue'],['musicGain','musicGainValue']].forEach(([inputId,valueId])=>{
 const input=document.getElementById(inputId),value=document.getElementById(valueId);
 if(input&&value){const update=()=>value.textContent=input.value+'%';input.addEventListener('input',update);update();}
