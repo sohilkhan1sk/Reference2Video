@@ -119,8 +119,10 @@
 
 /* Synchronized scene-video monitor */
 .assembly-video-preview-panel{margin:14px 0;padding:12px;border:1px solid #31555a;border-radius:10px;background:#0a1820}
-.assembly-video-frame{display:grid;place-items:center;min-height:150px;background:#000;border-radius:8px;overflow:hidden}
-.assembly-video-frame video{display:block;width:100%;max-height:420px;aspect-ratio:16/9;object-fit:contain;background:#000}
+.assembly-video-frame{position:relative;display:block;max-height:420px;min-height:150px;margin:0 auto;background:#000;border-radius:8px;overflow:hidden}
+.assembly-video-frame video{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain;background:#000;opacity:0;transition:none;will-change:opacity}
+.assembly-video-frame .layer-primary{z-index:1}
+.assembly-video-frame .layer-secondary{z-index:2}
 .assembly-video-preview-panel>small{display:block;margin-top:8px;color:#9bb4b5;font-size:10px;letter-spacing:0;font-weight:500;line-height:1.5}
 .video-preview-note{color:#829fa2!important}
 .video-preview-empty{padding:14px;border:1px dashed #42636a;border-radius:8px;color:#9bb4b5;font-size:11px}
