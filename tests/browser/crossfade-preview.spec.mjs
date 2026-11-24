@@ -92,9 +92,6 @@ async function activeVideoState(page) {
 test.beforeEach(async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", error => pageErrors.push(error.message));
-  page.on("close", () => {
-    if (pageErrors.length) throw new Error(pageErrors.join("\n"));
-  });
   page.__reference2VideoPageErrors = pageErrors;
 });
 
@@ -111,7 +108,10 @@ test("real browser loads both MP4s, blends them, plays together and seeks across
 
   // Two 3-second clips with a 0.5-second overlap start blending at 2.5 seconds.
   await setPlayhead(page, 2.75);
-  await expect.poll(async () => (await activeVideoState(page)).length).toBe(2);
+  await expect.poll(async () => {
+    const state = await activeVideoState(page);
+    return state.length === 2 && state.every(layer => layer.readyState >= 1);
+  }).toBe(true);
 
   let layers = await activeVideoState(page);
   const first = layers.find(layer => layer.source.endsWith("/job-a"));
