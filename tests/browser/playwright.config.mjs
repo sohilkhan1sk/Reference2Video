@@ -14,7 +14,7 @@ export default defineConfig({
     }
   },
   webServer: {
-    command: "node tests/browser/preview-server.mjs",
+    command: "node preview-server.mjs",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: !process.env.CI,
     timeout: 15000
