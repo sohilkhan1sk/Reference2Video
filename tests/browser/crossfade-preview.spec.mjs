@@ -60,6 +60,9 @@ async function openStudio(page, aspect = "16:9") {
   }));
 
   await page.goto("/");
+  // The production assembly panel is revealed after reference analysis.
+  // Expose that already-rendered section here so this test can focus on preview playback.
+  await page.locator("#results").evaluate(element => element.classList.remove("hidden"));
   await page.locator("#assemblyAspect").selectOption(aspect);
   await page.locator("#videoAccessToken").fill("browser-test-owner-token");
   await page.locator("#loadJobsBtn").click();
