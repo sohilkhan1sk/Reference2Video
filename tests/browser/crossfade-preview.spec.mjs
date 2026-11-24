@@ -109,8 +109,8 @@ test("real browser loads both MP4s, blends them, plays together and seeks across
   const outgoing = page.locator("#assemblyVideoMonitor");
   await expect.poll(() => outgoing.evaluate(video => video.readyState)).toBeGreaterThanOrEqual(1);
 
-  // Two 3-second clips with a 0.5-second overlap start blending at 2.5 seconds.
-  await setPlayhead(page, 2.75);
+  // The 0.1-second range control snaps 2.75 to 2.8; the 0.5-second overlap is therefore at 60%.
+  await setPlayhead(page, 2.8);
   await expect.poll(async () => {
     const state = await activeVideoState(page);
     return state.length === 2 && state.every(layer => layer.readyState >= 1);
@@ -122,7 +122,7 @@ test("real browser loads both MP4s, blends them, plays together and seeks across
   expect(first).toBeTruthy();
   expect(second).toBeTruthy();
   expect(first.opacity).toBeCloseTo(1, 2);
-  expect(second.opacity).toBeCloseTo(0.5, 1);
+  expect(second.opacity).toBeCloseTo(0.6, 2);
   expect(first.currentTime).toBeGreaterThan(2.5);
   expect(second.currentTime).toBeGreaterThan(0.1);
 
