@@ -90,9 +90,16 @@ async function activeVideoState(page) {
 }
 
 test.beforeEach(async ({ page }) => {
-  page.on("pageerror", error => {
-    throw error;
+  const pageErrors = [];
+  page.on("pageerror", error => pageErrors.push(error.message));
+  page.on("close", () => {
+    if (pageErrors.length) throw new Error(pageErrors.join("\n"));
   });
+  page.__reference2VideoPageErrors = pageErrors;
+});
+
+test.afterEach(async ({ page }) => {
+  expect(page.__reference2VideoPageErrors || []).toEqual([]);
 });
 
 test("real browser loads both MP4s, blends them, plays together and seeks across scene boundaries", async ({ page }) => {
@@ -116,14 +123,15 @@ test("real browser loads both MP4s, blends them, plays together and seeks across
   expect(first.currentTime).toBeGreaterThan(2.5);
   expect(second.currentTime).toBeGreaterThan(0.1);
 
-  // A user click starts the Web Audio clock and both muted video layers.
+  // Start near the beginning of the overlap so both short test clips have time to advance.
+  await setPlayhead(page, 2.6);
   await page.locator("#audioPreviewPlay").click();
   await expect.poll(async () => {
     const state = await activeVideoState(page);
     return state.length === 2 && state.every(layer => !layer.paused);
   }).toBe(true);
   const before = await activeVideoState(page);
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(120);
   const after = await activeVideoState(page);
   for (const layer of after) {
     const previous = before.find(item => item.source === layer.source);
