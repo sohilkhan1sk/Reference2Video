@@ -1,8 +1,10 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = process.cwd();
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(scriptDirectory, "../..");
 const fixtureRoutes = new Map([
   ["/api/generated/job-a", "tests/browser/fixtures/red.mp4"],
   ["/api/generated/job-b", "tests/browser/fixtures/blue.mp4"]
@@ -47,7 +49,7 @@ const server = http.createServer((request, response) => {
   };
   const range = request.headers.range;
   if (range) {
-    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    const match = /^bytes=(\\d*)-(\\d*)$/.exec(range);
     if (!match) {
       response.writeHead(416, { "Content-Range": `bytes */${stat.size}` }).end();
       return;
@@ -81,5 +83,5 @@ const server = http.createServer((request, response) => {
 
 const port = Number(process.env.PORT || 4173);
 server.listen(port, "127.0.0.1", () => {
-  process.stdout.write(`Reference2Video browser-test server listening on ${port}\n`);
+  process.stdout.write(`Reference2Video browser-test server listening on ${port}\\n`);
 });
