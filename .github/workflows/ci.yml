@@ -41,3 +41,16 @@ jobs:
         run: node --test tests/test_assembly_video_preview.js
       - name: Check video worker JavaScript syntax
         run: node --check scripts/generate-video.mjs
+      - name: Install Node package dependencies
+        run: npm install --no-package-lock --no-audit --no-fund
+      - name: Install Chromium for browser integration tests
+        run: npx playwright install --with-deps chromium
+      - name: Generate synthetic browser video fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          mkdir -p tests/browser/fixtures
+          ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=red:s=320x180:r=30 -t 3 -an -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y tests/browser/fixtures/red.mp4
+          ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=blue:s=320x180:r=30 -t 3 -an -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y tests/browser/fixtures/blue.mp4
+      - name: Run browser-level crossfade preview tests
+        run: npx playwright test --config tests/browser/playwright.config.mjs
