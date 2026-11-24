@@ -49,9 +49,9 @@ const server = http.createServer((request, response) => {
   };
   const range = request.headers.range;
   if (range) {
-    const match = /^bytes=(\\d*)-(\\d*)$/.exec(range);
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
     if (!match) {
-      response.writeHead(416, { "Content-Range": `bytes */${stat.size}` }).end();
+      response.writeHead(416, { "Content-Range": "bytes */" + stat.size }).end();
       return;
     }
     let start = match[1] ? Number(match[1]) : 0;
@@ -62,14 +62,14 @@ const server = http.createServer((request, response) => {
       end = stat.size - 1;
     }
     if (start >= stat.size || end < start) {
-      response.writeHead(416, { "Content-Range": `bytes */${stat.size}` }).end();
+      response.writeHead(416, { "Content-Range": "bytes */" + stat.size }).end();
       return;
     }
     end = Math.min(end, stat.size - 1);
     response.writeHead(206, {
       ...headers,
       "Content-Length": end - start + 1,
-      "Content-Range": `bytes ${start}-${end}/${stat.size}`
+      "Content-Range": "bytes " + start + "-" + end + "/" + stat.size
     });
     if (request.method === "HEAD") response.end();
     else fs.createReadStream(file, { start, end }).pipe(response);
@@ -83,5 +83,5 @@ const server = http.createServer((request, response) => {
 
 const port = Number(process.env.PORT || 4173);
 server.listen(port, "127.0.0.1", () => {
-  process.stdout.write(`Reference2Video browser-test server listening on ${port}\\n`);
+  process.stdout.write("Reference2Video browser-test server listening on " + port + String.fromCharCode(10));
 });
