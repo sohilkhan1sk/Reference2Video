@@ -21,6 +21,10 @@ explicitly reports paid generation as disabled. No Gemini, Wan, AI Gateway,
 FFmpeg assembly endpoint, or paid generation endpoint is called by the browser
 tests.
 
+The Playwright config starts the preview server from this directory. The server
+resolves the repository root from its own file location, so the commands work
+both in CI and when invoked from the repository root.
+
 Run locally after installing the Python dependencies and Node packages:
 
     npm install --no-package-lock
