@@ -4,7 +4,7 @@ from flask import Flask, render_template, request, jsonify, send_file, redirect
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
-from assembly import assemble_clips, normalize_scene_edits, scene_edit_summary
+from assembly import assemble_clips, normalize_scene_edits, scene_edit_summary, ensure_subtitles_filter
 from subtitle_tracks import normalize_subtitles, write_srt_file
 from media_probe import probe_media
 from job_store import (
@@ -392,6 +392,8 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
             assembly_id, message="Checking FFmpeg and collecting completed scene clips…"
         )
         ffmpeg_path = ensure_ffmpeg()
+        if subtitle_path:
+            ensure_subtitles_filter(ffmpeg_path)
         source_paths = []
         for index, source_job_id in enumerate(source_job_ids, start=1):
             source_job = get_video_job_record(source_job_id)
