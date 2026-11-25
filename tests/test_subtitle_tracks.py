@@ -52,9 +52,9 @@ class SubtitleTrackTests(unittest.TestCase):
 
     def test_prevents_ass_override_blocks_in_user_text(self):
         result = normalize_subtitles({"captions": [
-            {"start_seconds": 0, "end_seconds": 1, "text": r"{\an8}Hello"}
+            {"start_seconds": 0, "end_seconds": 1, "text": r"{\an8}<b>Hello</b>"}
         ]}, 2)
-        self.assertEqual(result["captions"][0]["text"], "｛\\an8｝Hello")
+        self.assertEqual(result["captions"][0]["text"], "｛＼an8｝＜b＞Hello＜/b＞")
 
     def test_style_is_allow_listed_and_scales_to_output_height(self):
         style = normalize_subtitle_style({
