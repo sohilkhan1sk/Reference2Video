@@ -323,6 +323,9 @@ function startAssemblyVideoSyncLoop(){
  tick();
 }
 
+function safeCaptionText(value){
+ return String(value||'').replaceAll('\\','＼').replaceAll('{','｛').replaceAll('}','｝').replaceAll('<','＜').replaceAll('>','＞');
+}
 function renderSubtitleOverlay(seconds){
  const overlay=document.getElementById('subtitlePreviewOverlay');
  if(!overlay)return;
@@ -331,7 +334,7 @@ function renderSubtitleOverlay(seconds){
  const cues=Array.from(document.querySelectorAll('.subtitle-cue')).map(row=>({
   start:Number(row.querySelector('[data-subtitle-start]')?.value),
   end:Number(row.querySelector('[data-subtitle-end]')?.value),
-  text:row.querySelector('[data-subtitle-text]')?.value||''
+  text:safeCaptionText(row.querySelector('[data-subtitle-text]')?.value||'')
  })).filter(cue=>enabled&&Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.end>cue.start&&time>=cue.start&&time<cue.end&&cue.text.trim());
  const frame=overlay.parentElement;
  const position=document.getElementById('subtitlePosition')?.value||'bottom';
