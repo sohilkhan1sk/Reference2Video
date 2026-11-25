@@ -11,6 +11,7 @@ from assembly import (
     video_filter,
     build_audio_mux_command,
     build_xfade_command,
+    build_subtitle_burn_command,
     normalize_scene_edits,
     scene_edit_summary,
 )
@@ -389,6 +390,90 @@ class AssemblyTests(unittest.TestCase):
             missing = root / "missing.mp4"
             with self.assertRaises(FileNotFoundError):
                 assemble_clips([missing], root / "out.mp4", "16:9", "ffmpeg", root / "work")
+
+
+    def test_subtitle_burn_command_uses_safe_style_and_libass_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subtitle_file = Path(tmp) / "captions.srt"
+            subtitle_file.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                encoding="utf-8",
+            )
+            command = build_subtitle_burn_command(
+                "ffmpeg", "joined.mp4", "captioned.mp4", subtitle_file,
+                "9:16",
+                {"position": "top", "color": "yellow", "font_size_ratio": 0.05},
+            )
+            graph = command[command.index("-vf") + 1]
+            self.assertIn("subtitles=filename=", graph)
+            self.assertIn("force_style=", graph)
+            self.assertIn("FontSize=64", graph)
+            self.assertIn("Alignment=8", graph)
+            self.assertIn("PrimaryColour=&H0000FFFF", graph)
+            self.assertIn("libx264", command)
+            self.assertIn("-an", command)
+
+    def test_assemble_clips_burns_subtitles_for_silent_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "scene.mp4"
+            subtitles = root / "captions.srt"
+            source.write_bytes(b"scene")
+            subtitles.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                encoding="utf-8",
+            )
+            output = root / "exports" / "final.mp4"
+            calls = []
+
+            def fake_runner(command, **kwargs):
+                calls.append(command)
+                Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+                Path(command[-1]).write_bytes(b"fake-output")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            assemble_clips(
+                [source], output, "16:9", "ffmpeg", root / "work",
+                runner=fake_runner, subtitle_path=subtitles,
+                subtitle_style={"position": "bottom", "color": "white"},
+            )
+            self.assertEqual(len(calls), 3)
+            self.assertIn("subtitles=filename=", calls[-1][calls[-1].index("-vf") + 1])
+            self.assertEqual(calls[-1][-1], str(output))
+            self.assertTrue(output.is_file())
+
+    def test_assemble_burns_subtitles_before_audio_mux(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "scene.mp4"
+            subtitles = root / "captions.srt"
+            voice = root / "voice.wav"
+            source.write_bytes(b"scene")
+            subtitles.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                encoding="utf-8",
+            )
+            voice.write_bytes(b"voice")
+            output = root / "exports" / "final.mp4"
+            calls = []
+
+            def fake_runner(command, **kwargs):
+                calls.append(command)
+                Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+                Path(command[-1]).write_bytes(b"fake-output")
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            assemble_clips(
+                [source], output, "16:9", "ffmpeg", root / "work",
+                runner=fake_runner, voiceover_path=voice,
+                subtitle_path=subtitles,
+            )
+            self.assertEqual(len(calls), 4)
+            subtitle_command = calls[-2]
+            audio_command = calls[-1]
+            self.assertIn("subtitles=filename=", subtitle_command[subtitle_command.index("-vf") + 1])
+            self.assertIn("captioned-silent.mp4", audio_command)
+            self.assertEqual(audio_command[-1], str(output))
 
 
 if __name__ == "__main__":
