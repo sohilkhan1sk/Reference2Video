@@ -804,7 +804,6 @@ async function createAssembly(){
  if(voiceoverProcessing.error){if(status)status.textContent=voiceoverProcessing.error;return;}
  if(musicProcessing.error){if(status)status.textContent=musicProcessing.error;return;}
  const tracks=[voiceover?'voiceover':null,music?'background music':null,soundEffects.length?(soundEffects.length+' timed SFX cue(s)'):null].filter(Boolean);
- const trackSummary=tracks.length?tracks.join(' + '):'silent audio';
  const sceneEdits=collectSceneEdits();
  const scenePlan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(
   assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
@@ -814,6 +813,7 @@ async function createAssembly(){
  if(subtitleResult.error){if(status)status.textContent=subtitleResult.error;return;}
  const subtitles=subtitleResult.payload;
  if(subtitles)tracks.push(subtitles.captions.length+' subtitle cue(s)');
+ const trackSummary=tracks.length?tracks.join(' + '):'silent audio';
  const crossfadeSummary=scenePlan.transitionCount?(' with '+scenePlan.transitionCount+' crossfade(s)'):' with hard cuts';
  if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4'+crossfadeSummary+'?\n\nTrimmed timeline: '+scenePlan.durationSeconds.toFixed(2)+' seconds.\nTracks: '+trackSummary+'.\n\nFFmpeg uses the server and does not call a paid AI provider.'))return;
  button.disabled=true;
