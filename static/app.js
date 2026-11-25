@@ -357,7 +357,7 @@ function addSubtitleCue(){
   return;
  }
  const previousEnds=Array.from(list.querySelectorAll('[data-subtitle-end]'))
-  .map(input=>Number(input.value)).filter(value=>Number.isFinite(value));
+  .map(input=>Number(input.value)).filter(value=>Number.isFinite(value)&&value>=0&&value<3600);
  const startSeconds=previousEnds.length?Math.max(...previousEnds):0;
  const endSeconds=Math.min(3600,startSeconds+2.5);
  if(endSeconds<=startSeconds){
