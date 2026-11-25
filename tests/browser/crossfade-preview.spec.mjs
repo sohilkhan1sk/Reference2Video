@@ -171,7 +171,7 @@ test("manual captions appear on the video monitor only during their time range a
   const overlay = page.locator("#subtitlePreviewOverlay");
   await setPlayhead(page, 0.5);
   await expect(overlay).toBeVisible();
-  await expect(overlay).toHaveText("Hello <script>world</script>");
+  await expect(overlay).toHaveText("Hello ＜script＞world＜/script＞");
   expect(await overlay.locator("script").count()).toBe(0);
 
   await setPlayhead(page, 2);
