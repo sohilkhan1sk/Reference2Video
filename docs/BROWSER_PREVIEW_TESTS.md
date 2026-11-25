@@ -10,7 +10,8 @@ browser tests then:
 
 - load the clips through the same /api/generated/<job_id> paths used by the app;
 - add both completed jobs to the real assembly queue;
-- set a 0.5-second crossfade and seek to its midpoint;
+- set a 0.5-second crossfade and seek into its overlap using the timeline's
+  0.1-second slider resolution;
 - assert that two real HTML video elements are loaded and simultaneously playing;
 - check their source offsets and computed opacity;
 - seek before and after the overlap and verify the active scene changes;
@@ -23,7 +24,8 @@ tests.
 
 The Playwright config starts the preview server from this directory. The server
 resolves the repository root from its own file location, so the commands work
-both in CI and when invoked from the repository root.
+both in CI and when invoked from the repository root. CI runs the full Python,
+Node, and headless Chromium suites together on the pull request.
 
 Run locally after installing the Python dependencies and Node packages:
 
