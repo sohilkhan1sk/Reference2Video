@@ -4,6 +4,8 @@ import math
 import subprocess
 from pathlib import Path
 
+from subtitle_tracks import subtitle_force_style
+
 OUTPUT_SIZES = {
     "16:9": (1280, 720),
     "9:16": (720, 1280),
@@ -218,6 +220,59 @@ def build_xfade_command(ffmpeg, input_paths, group_durations,
         "-movflags", "+faststart", str(output_path),
     ])
     return command
+
+
+
+
+def ensure_subtitles_filter(ffmpeg_path, runner=subprocess.run):
+    """Fail early when the configured FFmpeg binary was built without libass."""
+    try:
+        result = runner(
+            [str(ffmpeg_path), "-hide_banner", "-filters"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Could not inspect FFmpeg subtitle support.") from exc
+    output = (getattr(result, "stdout", "") or "") + "\n" + (getattr(result, "stderr", "") or "")
+    has_filter = any(" subtitles " in f" {line.strip()} " for line in output.splitlines())
+    if getattr(result, "returncode", 1) != 0 or not has_filter:
+        raise RuntimeError(
+            "Burned-in captions require an FFmpeg build with the subtitles filter "
+            "and libass support (--enable-libass). Set FFMPEG_PATH to a full FFmpeg "
+            "build or install one that includes libass; audio/video assembly without "
+            "captions can still use the current FFmpeg binary."
+        )
+    return True
+
+
+def build_subtitle_burn_command(ffmpeg, input_path, output_path, subtitle_path,
+                                aspect_ratio, subtitle_style=None):
+    """Burn a validated SRT file into the silent scene sequence using libass."""
+    _width, height = output_size(aspect_ratio)
+    subtitle_file = Path(subtitle_path)
+    if not subtitle_file.is_file() or subtitle_file.stat().st_size == 0:
+        raise FileNotFoundError("The subtitle file is missing or empty.")
+    style = subtitle_force_style(subtitle_style, height)
+    escaped_path = (
+        str(subtitle_file.resolve())
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+    )
+    filter_graph = (
+        f"subtitles=filename='{escaped_path}':"
+        f"force_style='{style}'"
+    )
+    return [
+        str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(input_path),
+        "-map", "0:v:0",
+        "-vf", filter_graph,
+        "-an",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-pix_fmt", "yuv420p", "-threads", "2",
+        "-movflags", "+faststart", str(output_path),
+    ]
 
 
 def _gain_text(value, maximum, label):
@@ -453,8 +508,9 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
                    music_trim_end_seconds=0,
                    music_fade_in_seconds=0,
                    music_fade_out_start_seconds=0,
-                   music_fade_out_seconds=0):
-    """Trim, normalize, cut/crossfade scene clips, then mix optional audio."""
+                   music_fade_out_seconds=0,
+                   subtitle_path=None, subtitle_style=None):
+    """Trim, normalize, cut/crossfade clips, burn optional captions and mix audio."""
     sources = [Path(path) for path in source_paths]
     if not sources:
         raise ValueError("Choose at least one completed scene clip.")
@@ -468,6 +524,8 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
         if audio_path and (not Path(audio_path).is_file() or Path(audio_path).stat().st_size == 0):
             raise FileNotFoundError(f"{label} file is missing or empty.")
     effects = _validated_sound_effects(sound_effects)
+    if subtitle_path and (not Path(subtitle_path).is_file() or Path(subtitle_path).stat().st_size == 0):
+        raise FileNotFoundError("The subtitle file is missing or empty.")
     if voiceover_path:
         _gain_text(voiceover_gain, 2.0, "Voiceover")
         _audio_processing_values(
@@ -527,7 +585,8 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
         normalized_paths.append(normalized)
 
     has_audio = bool(voiceover_path or music_path or effects)
-    joined_video = work / "joined-silent.mp4" if has_audio else destination
+    has_subtitles = bool(subtitle_path)
+    joined_video = work / "joined-silent.mp4" if (has_audio or has_subtitles) else destination
     crossfade_indexes = [
         index for index, edit in enumerate(edits[:-1])
         if edit.get("transition_after") == "crossfade"
@@ -603,12 +662,29 @@ def assemble_clips(source_paths, output_path, aspect_ratio, ffmpeg_path,
     if not joined_video.is_file() or joined_video.stat().st_size == 0:
         raise RuntimeError("FFmpeg did not produce the joined video.")
 
+    video_for_audio = joined_video
+    if has_subtitles:
+        captioned_video = work / "captioned-silent.mp4" if has_audio else destination
+        if progress_callback:
+            progress_callback("Burning the approved subtitle cues into the video…")
+        _run(
+            build_subtitle_burn_command(
+                ffmpeg_path, joined_video, captioned_video, subtitle_path,
+                aspect_ratio, subtitle_style,
+            ),
+            timeout=600,
+            runner=runner,
+        )
+        if not captioned_video.is_file() or captioned_video.stat().st_size == 0:
+            raise RuntimeError("FFmpeg did not produce the captioned video. Check that the FFmpeg build includes the subtitles/libass filter.")
+        video_for_audio = captioned_video
+
     if has_audio:
         if progress_callback:
             progress_callback("Trimming and mixing narration, music and sound effects…")
         _run(
             build_audio_mux_command(
-                ffmpeg_path, joined_video, destination,
+                ffmpeg_path, video_for_audio, destination,
                 voiceover_path=voiceover_path, music_path=music_path,
                 voiceover_gain=voiceover_gain, music_gain=music_gain,
                 sound_effects=effects,
