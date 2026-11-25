@@ -145,7 +145,11 @@ def normalize_subtitles(raw_value, final_duration_seconds):
 
         # SRT is parsed by libass. Full-width braces prevent user text from injecting
         # ASS override blocks such as {\an8} while preserving their visible meaning.
-        text = text.replace("{", "｛").replace("}", "｝")
+        text = (
+            text.replace("\\", "＼")
+            .replace("{", "｛").replace("}", "｝")
+            .replace("<", "＜").replace(">", "＞")
+        )
         normalized.append({
             "start_seconds": start,
             "end_seconds": end,
