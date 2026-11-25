@@ -227,6 +227,7 @@ function syncAssemblyVideoPreview(seconds,shouldPlay){
  if(!state||!Array.isArray(state.layers))return;
  const frame=window.Reference2VideoVideoPreview.locateLayersAtTime(state.plan,seconds);
  state.currentSeconds=frame.timeSeconds;
+ renderSubtitleOverlay(frame.timeSeconds);
  const wasPlaying=state.shouldPlay;
  state.shouldPlay=Boolean(shouldPlay);
  if(state.shouldPlay&&!wasPlaying){
@@ -321,6 +322,78 @@ function startAssemblyVideoSyncLoop(){
  const tick=()=>{if(!audioPreviewState){assemblyVideoSyncRaf=0;pauseAssemblyVideoPreview();return;}syncAssemblyVideoPreview(audioTimelinePlayheadSeconds,true);assemblyVideoSyncRaf=window.requestAnimationFrame(tick);};
  tick();
 }
+
+function renderSubtitleOverlay(seconds){
+ const overlay=document.getElementById('subtitlePreviewOverlay');
+ if(!overlay)return;
+ const enabled=document.getElementById('subtitlesEnabled')?.checked;
+ const time=Number(seconds)||0;
+ const cues=Array.from(document.querySelectorAll('.subtitle-cue')).map(row=>({
+  start:Number(row.querySelector('[data-subtitle-start]')?.value),
+  end:Number(row.querySelector('[data-subtitle-end]')?.value),
+  text:row.querySelector('[data-subtitle-text]')?.value||''
+ })).filter(cue=>enabled&&Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.end>cue.start&&time>=cue.start&&time<cue.end&&cue.text.trim());
+ const frame=overlay.parentElement;
+ const position=document.getElementById('subtitlePosition')?.value||'bottom';
+ const color=document.getElementById('subtitleColor')?.value||'white';
+ const ratio=Number(document.getElementById('subtitleSize')?.value||4.5)/100;
+ overlay.textContent=cues.map(cue=>cue.text.trim()).join('\n');
+ overlay.style.display=cues.length?'block':'none';
+ overlay.style.color=({white:'#ffffff',yellow:'#fff07a',cyan:'#7df5f0'})[color]||'#ffffff';
+ overlay.style.fontSize=Math.max(12,(frame?.clientHeight||240)*ratio)+'px';
+ overlay.style.top=position==='top'?'6%':(position==='middle'?'50%':'auto');
+ overlay.style.bottom=position==='bottom'?'7%':'auto';
+ overlay.style.transform=position==='middle'?'translateY(-50%)':'none';
+}
+function addSubtitleCue(){
+ const list=document.getElementById('subtitleCueList');
+ if(!list)return;
+ if(list.querySelectorAll('.subtitle-cue').length>=200){
+  const status=document.getElementById('assemblyStatus');
+  if(status)status.textContent='A maximum of 200 subtitle cues can be added to one export.';
+  return;
+ }
+ const row=document.createElement('div');
+ row.className='subtitle-cue';
+ row.innerHTML='<div class="subtitle-cue-fields"><label>START (SEC)<input type="number" data-subtitle-start min="0" max="3600" step="0.1" value="0"></label><label>END (SEC)<input type="number" data-subtitle-end min="0" max="3600" step="0.1" value="2.5"></label><label class="subtitle-text-label">CAPTION TEXT<textarea data-subtitle-text maxlength="220" rows="2" placeholder="Type the caption shown on screen"></textarea></label></div><button type="button" class="secondary subtitle-remove">Remove</button>';
+ row.querySelector('.subtitle-remove').addEventListener('click',()=>{row.remove();renderSubtitleOverlay(audioTimelinePlayheadSeconds);});
+ list.appendChild(row);
+ renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+}
+function collectSubtitlePayload(finalDuration){
+ const enabled=document.getElementById('subtitlesEnabled')?.checked;
+ if(!enabled)return {payload:null};
+ const rows=Array.from(document.querySelectorAll('.subtitle-cue'));
+ const captions=[];
+ for(let index=0;index<rows.length;index++){
+  const row=rows[index];
+  const text=(row.querySelector('[data-subtitle-text]')?.value||'').trim();
+  if(!text)continue;
+  const start=Number(row.querySelector('[data-subtitle-start]')?.value);
+  const end=Number(row.querySelector('[data-subtitle-end]')?.value);
+  if(!Number.isFinite(start)||!Number.isFinite(end)||start<0||end<=start){
+   return {error:'Subtitle cue '+(index+1)+' needs valid start and end times, with end after start.'};
+  }
+  if(end>finalDuration+0.001){
+   return {error:'Subtitle cue '+(index+1)+' ends after the '+finalDuration.toFixed(2)+' second export timeline.'};
+  }
+  if(text.length>220||text.split('\n').length>2||text.split('\n').some(line=>line.length>100)){
+   return {error:'Subtitle cue '+(index+1)+' must be at most 220 characters and two lines of 100 characters each.'};
+  }
+  captions.push({start_seconds:start,end_seconds:end,text});
+ }
+ if(!captions.length)return {error:'Enable subtitles only after adding at least one caption with text.'};
+ if(captions.length>200)return {error:'Use no more than 200 subtitle cues.'};
+ return {payload:{
+  captions,
+  style:{
+   position:document.getElementById('subtitlePosition')?.value||'bottom',
+   color:document.getElementById('subtitleColor')?.value||'white',
+   font_size_ratio:Number(document.getElementById('subtitleSize')?.value||4.5)/100
+  }
+ }};
+}
+
 function renderAssemblyVideoPreview(){
  const panel=document.getElementById('assemblyVideoPreviewPanel');if(!panel)return;
  pauseAssemblyVideoPreview();
@@ -337,7 +410,7 @@ function renderAssemblyVideoPreview(){
  const aspect=document.getElementById('assemblyAspect')?.value||'16:9';
  const frameRatio=aspect==='9:16'?'9 / 16':'16 / 9';
  const frameWidth=aspect==='9:16'?'min(100%, 236px)':'min(100%, 746px)';
- panel.innerHTML='<div class="assembly-video-frame" style="aspect-ratio:'+frameRatio+';width:'+frameWidth+'"><video id="assemblyVideoMonitor" class="assembly-video-layer layer-primary" muted playsinline preload="metadata" aria-label="Outgoing scene preview"></video><video id="assemblyVideoMonitorSecondary" class="assembly-video-layer layer-secondary" muted playsinline preload="metadata" aria-label="Incoming scene preview"></video></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">'+timingNote+' Source clip audio is muted to avoid double playback.</small>';
+ panel.innerHTML='<div class="assembly-video-frame" style="aspect-ratio:'+frameRatio+';width:'+frameWidth+'"><video id="assemblyVideoMonitor" class="assembly-video-layer layer-primary" muted playsinline preload="metadata" aria-label="Outgoing scene preview"></video><video id="assemblyVideoMonitorSecondary" class="assembly-video-layer layer-secondary" muted playsinline preload="metadata" aria-label="Incoming scene preview"></video><div class="subtitle-preview-overlay" id="subtitlePreviewOverlay" aria-hidden="true"></div></div><div class="video-sequence-track">'+segments+'<span class="video-sequence-playhead" id="videoSequencePlayhead"></span></div><small id="assemblyVideoStatus">Ready · '+plan.segments.length+' scene clip(s) queued. Use “Play video + audio” in the audio timeline below.</small><small class="video-preview-note">'+timingNote+' Source clip audio is muted to avoid double playback.</small>';
  const videos=[panel.querySelector('#assemblyVideoMonitor'),panel.querySelector('#assemblyVideoMonitorSecondary')];
  videos.forEach(video=>{video.muted=true;video.playsInline=true;});
  assemblyVideoPreviewState={
@@ -669,6 +742,11 @@ document.getElementById('addSfxBtn')?.addEventListener('click',addSfxCue);
 const audioEditor=document.querySelector('.assembly-panel');
 audioEditor?.addEventListener('input',event=>{if(event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
 audioEditor?.addEventListener('change',event=>{if(event.target.matches('input[type="file"]')||event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
+document.getElementById('addSubtitleBtn')?.addEventListener('click',addSubtitleCue);
+const subtitleEditor=document.querySelector('.subtitle-editor');
+subtitleEditor?.addEventListener('input',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
+subtitleEditor?.addEventListener('change',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
+
 function readAudioProcessing(read,label){
  const values={
   trim_start_seconds:Number(read('trim_start')||0),
@@ -732,8 +810,12 @@ async function createAssembly(){
   assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
  );
  if(scenePlan.errors.length){if(status)status.textContent=scenePlan.errors.join(' ');return;}
+ const subtitleResult=collectSubtitlePayload(scenePlan.durationSeconds);
+ if(subtitleResult.error){if(status)status.textContent=subtitleResult.error;return;}
+ const subtitles=subtitleResult.payload;
+ if(subtitles)tracks.push(subtitles.captions.length+' subtitle cue(s)');
  const crossfadeSummary=scenePlan.transitionCount?(' with '+scenePlan.transitionCount+' crossfade(s)'):' with hard cuts';
- if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4'+crossfadeSummary+'?\n\nTrimmed timeline: '+scenePlan.durationSeconds.toFixed(2)+' seconds.\nAudio: '+trackSummary+'.\n\nFFmpeg uses the server and does not call a paid AI provider.'))return;
+ if(!window.confirm('Assemble '+assemblyQueue.length+' clips as a '+aspect+' MP4'+crossfadeSummary+'?\n\nTrimmed timeline: '+scenePlan.durationSeconds.toFixed(2)+' seconds.\nTracks: '+trackSummary+'.\n\nFFmpeg uses the server and does not call a paid AI provider.'))return;
  button.disabled=true;
  output.innerHTML='<div class="generation-status"><span class="spinner"></span><span>Starting FFmpeg assembly…</span></div>';
  if(status)status.textContent='Preparing '+trackSummary+'. No paid video-generation request is sent.';
@@ -748,6 +830,7 @@ async function createAssembly(){
    for(const [key,value] of Object.entries(processing))form.append(prefix+'_'+key,String(value));
   }
   form.append('sound_effects',JSON.stringify(soundEffects));
+  if(subtitles)form.append('subtitles',JSON.stringify(subtitles));
   if(voiceover)form.append('voiceover',voiceover);
   if(music)form.append('music',music);
   for(const cue of soundEffects){
