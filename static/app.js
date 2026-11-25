@@ -356,10 +356,24 @@ function addSubtitleCue(){
   if(status)status.textContent='A maximum of 200 subtitle cues can be added to one export.';
   return;
  }
+ const previousEnds=Array.from(list.querySelectorAll('[data-subtitle-end]'))
+  .map(input=>Number(input.value)).filter(value=>Number.isFinite(value));
+ const startSeconds=previousEnds.length?Math.max(...previousEnds):0;
+ const endSeconds=Math.min(3600,startSeconds+2.5);
+ if(endSeconds<=startSeconds){
+  const status=document.getElementById('assemblyStatus');
+  if(status)status.textContent='The subtitle timeline has reached its 60-minute limit.';
+  return;
+ }
+ list.querySelector('.subtitle-empty')?.remove();
  const row=document.createElement('div');
  row.className='subtitle-cue';
- row.innerHTML='<div class="subtitle-cue-fields"><label>START (SEC)<input type="number" data-subtitle-start min="0" max="3600" step="0.1" value="0"></label><label>END (SEC)<input type="number" data-subtitle-end min="0" max="3600" step="0.1" value="2.5"></label><label class="subtitle-text-label">CAPTION TEXT<textarea data-subtitle-text maxlength="220" rows="2" placeholder="Type the caption shown on screen"></textarea></label></div><button type="button" class="secondary subtitle-remove">Remove</button>';
- row.querySelector('.subtitle-remove').addEventListener('click',()=>{row.remove();renderSubtitleOverlay(audioTimelinePlayheadSeconds);});
+ row.innerHTML='<div class="subtitle-cue-fields"><label>START (SEC)<input type="number" data-subtitle-start min="0" max="3600" step="0.1" value="'+startSeconds+'"></label><label>END (SEC)<input type="number" data-subtitle-end min="0" max="3600" step="0.1" value="'+endSeconds+'"></label><label class="subtitle-text-label">CAPTION TEXT<textarea data-subtitle-text maxlength="220" rows="2" placeholder="Type the caption shown on screen"></textarea></label></div><button type="button" class="secondary subtitle-remove">Remove</button>';
+ row.querySelector('.subtitle-remove').addEventListener('click',()=>{
+  row.remove();
+  if(!list.querySelector('.subtitle-cue'))list.innerHTML='<p class="subtitle-empty">No captions yet. Add a cue, then enter its start/end time and text.</p>';
+  renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+ });
  list.appendChild(row);
  renderSubtitleOverlay(audioTimelinePlayheadSeconds);
 }
