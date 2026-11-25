@@ -158,6 +158,26 @@ test("real browser loads both MP4s, blends them, plays together and seeks across
   expect(layers[0].currentTime).toBeGreaterThan(0.4);
 });
 
+
+test("manual captions appear on the video monitor only during their time range and remain plain text", async ({ page }) => {
+  await openStudio(page);
+  await page.locator("#subtitlesEnabled").check();
+  await page.locator("#addSubtitleBtn").click();
+  const cue = page.locator(".subtitle-cue").first();
+  await cue.locator("[data-subtitle-start]").fill("0");
+  await cue.locator("[data-subtitle-end]").fill("1.5");
+  await cue.locator("[data-subtitle-text]").fill("Hello <script>world</script>");
+
+  const overlay = page.locator("#subtitlePreviewOverlay");
+  await setPlayhead(page, 0.5);
+  await expect(overlay).toBeVisible();
+  await expect(overlay).toHaveText("Hello <script>world</script>");
+  expect(await overlay.locator("script").count()).toBe(0);
+
+  await setPlayhead(page, 2);
+  await expect(overlay).toBeHidden();
+});
+
 test("portrait export selection creates a portrait video monitor frame", async ({ page }) => {
   await openStudio(page, "9:16");
   const frame = page.locator(".assembly-video-frame");
