@@ -12,6 +12,7 @@ from assembly import (
     build_audio_mux_command,
     build_xfade_command,
     build_subtitle_burn_command,
+    ensure_subtitles_filter,
     normalize_scene_edits,
     scene_edit_summary,
 )
@@ -474,6 +475,22 @@ class AssemblyTests(unittest.TestCase):
             self.assertIn("subtitles=filename=", subtitle_command[subtitle_command.index("-vf") + 1])
             self.assertIn("captioned-silent.mp4", audio_command)
             self.assertEqual(audio_command[-1], str(output))
+
+
+    def test_subtitle_filter_preflight_accepts_libass_build(self):
+        def fake_runner(command, **kwargs):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=" ... subtitles V->V Draw subtitles using libass\n",
+                stderr="",
+            )
+        self.assertTrue(ensure_subtitles_filter("ffmpeg", runner=fake_runner))
+
+    def test_subtitle_filter_preflight_rejects_build_without_libass(self):
+        def fake_runner(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=" ... scale V->V\n", stderr="")
+        with self.assertRaisesRegex(RuntimeError, "libass"):
+            ensure_subtitles_filter("ffmpeg", runner=fake_runner)
 
 
 if __name__ == "__main__":
