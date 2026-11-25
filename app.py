@@ -5,6 +5,7 @@ from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from google import genai
 from assembly import assemble_clips, normalize_scene_edits, scene_edit_summary
+from subtitle_tracks import normalize_subtitles, write_srt_file
 from media_probe import probe_media
 from job_store import (
     init_job_store, create_video_job, update_video_job,
@@ -381,7 +382,8 @@ def _assembly_file_url(assembly_id, download=False):
 def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
                     voiceover_path=None, music_path=None,
                     voiceover_gain=1.0, music_gain=0.18,
-                    sound_effects=None, audio_options=None, scene_edits=None):
+                    sound_effects=None, audio_options=None, scene_edits=None,
+                    subtitle_path=None, subtitle_style=None):
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
     output_path = ASSEMBLY_DIR / f"{assembly_id}.mp4"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -429,6 +431,8 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
             music_gain=music_gain,
             sound_effects=sound_effects,
             scene_edits=scene_edits,
+            subtitle_path=subtitle_path,
+            subtitle_style=subtitle_style,
             **(audio_options or {}),
         )
         if not output_path.is_file() or output_path.stat().st_size < 1024:
@@ -455,6 +459,8 @@ def run_assembly_job(assembly_id, source_job_ids, aspect_ratio,
             audio_labels.append("background music")
         if sound_effects:
             audio_labels.append(f"{len(sound_effects)} timed SFX cue(s)")
+        if subtitle_path:
+            audio_labels.append("burned-in subtitles")
         audio_suffix = " with " + " + ".join(audio_labels) if audio_labels else " (silent)"
         if output_uri:
             message = "Finished MP4 ready" + audio_suffix + " — saved in durable private object storage."
@@ -908,10 +914,18 @@ def create_assembly():
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     scene_summary = scene_edit_summary(scene_edits)
+    try:
+        subtitles = normalize_subtitles(
+            data.get("subtitles"), scene_summary["final_duration_seconds"]
+        )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
 
     assembly_id = uuid.uuid4().hex
     work_dir = GENERATED_DIR / "assembly_work" / assembly_id
     work_dir.mkdir(parents=True, exist_ok=True)
+    subtitle_path = None
+    subtitle_style = subtitles["style"] if subtitles else None
     try:
         voiceover_path = _save_optional_audio_upload("voiceover", work_dir, label="Voiceover")
         music_path = _save_optional_audio_upload("music", work_dir, label="Background music")
@@ -934,6 +948,10 @@ def create_assembly():
                 "fade_out_start_seconds": spec["fade_out_start_seconds"],
                 "fade_out_seconds": spec["fade_out_seconds"],
             })
+        if subtitles:
+            subtitle_path = str(write_srt_file(
+                subtitles["captions"], work_dir / "captions.srt"
+            ))
     except ValueError as exc:
         shutil.rmtree(work_dir, ignore_errors=True)
         return jsonify(error=str(exc)), 400
@@ -957,6 +975,10 @@ def create_assembly():
             for cue in sound_effects
         ],
         "scene_edits": scene_edits,
+        "subtitles": {
+            "count": len(subtitles["captions"]),
+            "style": subtitles["style"],
+        } if subtitles else None,
     }
     try:
         create_assembly_job(
@@ -980,6 +1002,8 @@ def create_assembly():
                     **{f"music_{key}": value for key, value in music_options.items()},
                 },
                 scene_edits,
+                subtitle_path,
+                subtitle_style,
             ),
             daemon=True,
         )
@@ -1001,6 +1025,7 @@ def create_assembly():
         aspect_ratio=aspect_ratio, source_count=len(source_job_ids),
         has_voiceover=bool(voiceover_path), has_music=bool(music_path),
         has_sound_effects=bool(sound_effects), sound_effect_count=len(sound_effects),
+        has_subtitles=bool(subtitles), subtitle_count=len(subtitles["captions"]) if subtitles else 0,
         crossfade_count=scene_summary["crossfade_count"],
         final_duration_seconds=scene_summary["final_duration_seconds"],
         provider="FFmpeg (local server processing)", estimated_cost_usd=0
@@ -1034,6 +1059,8 @@ def get_assembly_status(assembly_id):
         has_music=bool(audio_tracks.get("music")),
         has_sound_effects=bool(audio_tracks.get("sound_effects")),
         sound_effect_count=len(audio_tracks.get("sound_effects") or []),
+        has_subtitles=bool((audio_tracks.get("subtitles") or {}).get("count")),
+        subtitle_count=int((audio_tracks.get("subtitles") or {}).get("count") or 0),
         crossfade_count=scene_edit_summary(audio_tracks.get("scene_edits") or [])["crossfade_count"],
         final_duration_seconds=scene_edit_summary(audio_tracks.get("scene_edits") or [])["final_duration_seconds"],
         video_url=_assembly_file_url(assembly_id, False) if completed else None,
