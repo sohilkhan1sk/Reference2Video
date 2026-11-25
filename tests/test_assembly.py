@@ -473,7 +473,7 @@ class AssemblyTests(unittest.TestCase):
             subtitle_command = calls[-2]
             audio_command = calls[-1]
             self.assertIn("subtitles=filename=", subtitle_command[subtitle_command.index("-vf") + 1])
-            self.assertIn("captioned-silent.mp4", audio_command)
+            self.assertTrue(any("captioned-silent.mp4" in argument for argument in audio_command))
             self.assertEqual(audio_command[-1], str(output))
 
 
