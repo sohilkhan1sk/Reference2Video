@@ -854,7 +854,7 @@ const data=await readJsonResponse(response,'Assembly status');
 if(!response.ok)throw Error(data.error||'Could not check assembly status (HTTP '+response.status+').');
 if(data.status==='FAILED')throw Error(data.error||'FFmpeg assembly failed.');
 if(data.status==='COMPLETED'){
-output.innerHTML='<video controls playsinline preload="metadata" src="'+esc(data.video_url)+'"></video><div class="video-actions"><a href="'+esc(data.download_url)+'">Download finished MP4 ↓</a><span>'+esc(data.aspect_ratio)+' · '+esc(data.source_count)+' clips · '+(data.final_duration_seconds?Number(data.final_duration_seconds).toFixed(2)+' sec · ':'')+(data.crossfade_count?data.crossfade_count+' crossfade(s) · ':'')+([data.has_voiceover?'voiceover':null,data.has_music?'background music':null,data.sound_effect_count?(data.sound_effect_count+' timed SFX cue(s)'):null].filter(Boolean).join(' + ')||'silent')+'</span></div>'+(data.error?'<p class="generation-error">Storage warning: '+esc(data.error)+'</p>':(data.storage_backend==='s3'?'<p class="assembly-note">Saved in durable private object storage.</p>':'<p class="assembly-note">Saved on temporary server storage. Download it before a Render restart or redeploy.</p>'));
+output.innerHTML='<video controls playsinline preload="metadata" src="'+esc(data.video_url)+'"></video><div class="video-actions"><a href="'+esc(data.download_url)+'">Download finished MP4 ↓</a><span>'+esc(data.aspect_ratio)+' · '+esc(data.source_count)+' clips · '+(data.final_duration_seconds?Number(data.final_duration_seconds).toFixed(2)+' sec · ':'')+(data.crossfade_count?data.crossfade_count+' crossfade(s) · ':'')+([data.has_voiceover?'voiceover':null,data.has_music?'background music':null,data.sound_effect_count?(data.sound_effect_count+' timed SFX cue(s)'):null,data.subtitle_count?(data.subtitle_count+' subtitle cue(s)'):null].filter(Boolean).join(' + ')||'silent')+'</span></div>'+(data.error?'<p class="generation-error">Storage warning: '+esc(data.error)+'</p>':(data.storage_backend==='s3'?'<p class="assembly-note">Saved in durable private object storage.</p>':'<p class="assembly-note">Saved on temporary server storage. Download it before a Render restart or redeploy.</p>'));
 const status=document.getElementById('assemblyStatus');
 if(status)status.textContent='Finished MP4 is ready. The preview/download links are temporary and expire after 15 minutes; reload history and assemble again for fresh links if needed.';
 button.disabled=false;
@@ -869,6 +869,8 @@ button.disabled=false;
 }
 document.getElementById('assembleBtn')?.addEventListener('click',createAssembly);
 document.getElementById('assemblyAspect')?.addEventListener('change',renderAssemblyVideoPreview);
+const subtitleSize=document.getElementById('subtitleSize'),subtitleSizeValue=document.getElementById('subtitleSizeValue');
+if(subtitleSize&&subtitleSizeValue)subtitleSize.addEventListener('input',()=>{subtitleSizeValue.textContent=subtitleSize.value+'%';renderSubtitleOverlay(audioTimelinePlayheadSeconds);});
 [['voiceoverGain','voiceoverGainValue'],['musicGain','musicGainValue']].forEach(([inputId,valueId])=>{
 const input=document.getElementById(inputId),value=document.getElementById(valueId);
 if(input&&value){const update=()=>value.textContent=input.value+'%';input.addEventListener('input',update);update();}
