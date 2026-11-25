@@ -223,6 +223,28 @@ def build_xfade_command(ffmpeg, input_paths, group_durations,
 
 
 
+
+def ensure_subtitles_filter(ffmpeg_path, runner=subprocess.run):
+    """Fail early when the configured FFmpeg binary was built without libass."""
+    try:
+        result = runner(
+            [str(ffmpeg_path), "-hide_banner", "-filters"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Could not inspect FFmpeg subtitle support.") from exc
+    output = (getattr(result, "stdout", "") or "") + "\n" + (getattr(result, "stderr", "") or "")
+    has_filter = any(" subtitles " in f" {line.strip()} " for line in output.splitlines())
+    if getattr(result, "returncode", 1) != 0 or not has_filter:
+        raise RuntimeError(
+            "Burned-in captions require an FFmpeg build with the subtitles filter "
+            "and libass support (--enable-libass). Set FFMPEG_PATH to a full FFmpeg "
+            "build or install one that includes libass; audio/video assembly without "
+            "captions can still use the current FFmpeg binary."
+        )
+    return True
+
+
 def build_subtitle_burn_command(ffmpeg, input_path, output_path, subtitle_path,
                                 aspect_ratio, subtitle_style=None):
     """Burn a validated SRT file into the silent scene sequence using libass."""
