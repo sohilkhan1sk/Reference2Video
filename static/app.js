@@ -348,35 +348,45 @@ function renderSubtitleOverlay(seconds){
  overlay.style.bottom=position==='bottom'?'7%':'auto';
  overlay.style.transform=position==='middle'?'translateY(-50%)':'none';
 }
-function addSubtitleCue(){
- const list=document.getElementById('subtitleCueList');
- if(!list)return;
- if(list.querySelectorAll('.subtitle-cue').length>=200){
-  const status=document.getElementById('assemblyStatus');
-  if(status)status.textContent='A maximum of 200 subtitle cues can be added to one export.';
-  return;
- }
- const previousEnds=Array.from(list.querySelectorAll('[data-subtitle-end]'))
-  .map(input=>Number(input.value)).filter(value=>Number.isFinite(value)&&value>=0&&value<3600);
- const startSeconds=previousEnds.length?Math.max(...previousEnds):0;
- const endSeconds=Math.min(3600,startSeconds+2.5);
- if(endSeconds<=startSeconds){
-  const status=document.getElementById('assemblyStatus');
-  if(status)status.textContent='The subtitle timeline has reached its 60-minute limit.';
-  return;
- }
- list.querySelector('.subtitle-empty')?.remove();
- const row=document.createElement('div');
- row.className='subtitle-cue';
- row.innerHTML='<div class="subtitle-cue-fields"><label>START (SEC)<input type="number" data-subtitle-start min="0" max="3600" step="0.1" value="'+startSeconds+'"></label><label>END (SEC)<input type="number" data-subtitle-end min="0" max="3600" step="0.1" value="'+endSeconds+'"></label><label class="subtitle-text-label">CAPTION TEXT<textarea data-subtitle-text maxlength="220" rows="2" placeholder="Type the caption shown on screen"></textarea></label></div><button type="button" class="secondary subtitle-remove">Remove</button>';
- row.querySelector('.subtitle-remove').addEventListener('click',()=>{
-  row.remove();
-  if(!list.querySelector('.subtitle-cue'))list.innerHTML='<p class="subtitle-empty">No captions yet. Add a cue, then enter its start/end time and text.</p>';
+function addSubtitleCue(draft){
+  const list=document.getElementById('subtitleCueList');
+  if(!list)return null;
+  if(list.querySelectorAll('.subtitle-cue').length>=200){
+   const status=document.getElementById('assemblyStatus');
+   if(status)status.textContent='A maximum of 200 subtitle cues can be added to one export.';
+   return null;
+  }
+  const isDraft=Boolean(draft&&typeof draft==='object');
+  const previousEnds=Array.from(list.querySelectorAll('[data-subtitle-end]'))
+   .map(input=>Number(input.value)).filter(value=>Number.isFinite(value)&&value>=0&&value<3600);
+  const startSeconds=isDraft?Number(draft.start_seconds):(previousEnds.length?Math.max(...previousEnds):0);
+  const endSeconds=isDraft?Number(draft.end_seconds):Math.min(3600,startSeconds+2.5);
+  if(!Number.isFinite(startSeconds)||!Number.isFinite(endSeconds)||startSeconds<0||endSeconds<=startSeconds||endSeconds>3600){
+   const status=document.getElementById('assemblyStatus');
+   if(status)status.textContent='The caption draft has an invalid time range and was not added.';
+   return null;
+  }
+  list.querySelector('.subtitle-empty')?.remove();
+  const row=document.createElement('div');
+  row.className='subtitle-cue';
+  row.innerHTML='<div class="subtitle-cue-fields"><label>START (SEC)<input type="number" data-subtitle-start min="0" max="3600" step="0.1"></label><label>END (SEC)<input type="number" data-subtitle-end min="0" max="3600" step="0.1"></label><label class="subtitle-text-label"><small class="subtitle-cue-source"></small>CAPTION TEXT<textarea data-subtitle-text maxlength="220" rows="2" placeholder="Type the caption shown on screen"></textarea></label></div><button type="button" class="secondary subtitle-remove">Remove</button>';
+  row.querySelector('[data-subtitle-start]').value=String(startSeconds);
+  row.querySelector('[data-subtitle-end]').value=String(endSeconds);
+  row.querySelector('[data-subtitle-text]').value=isDraft?String(draft.text||''):'';
+  const sourceLabel=row.querySelector('.subtitle-cue-source');
+  sourceLabel.textContent=isDraft
+   ?('SCENE '+String(draft.scene_number||'').padStart(2,'0')+' · '+String(draft.source||'STORYBOARD DRAFT').toUpperCase())
+   :'MANUAL CUE';
+  row.querySelector('.subtitle-remove').addEventListener('click',()=>{
+   row.remove();
+   if(!list.querySelector('.subtitle-cue'))list.innerHTML='<p class="subtitle-empty">No captions yet. Add a cue, then enter its start/end time and text.</p>';
+   renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+  });
+  list.appendChild(row);
   renderSubtitleOverlay(audioTimelinePlayheadSeconds);
- });
- list.appendChild(row);
- renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+  return row;
 }
+
 function collectSubtitlePayload(finalDuration){
  const enabled=document.getElementById('subtitlesEnabled')?.checked;
  if(!enabled)return {payload:null};
@@ -409,6 +419,73 @@ function collectSubtitlePayload(finalDuration){
    font_size_ratio:Number(document.getElementById('subtitleSize')?.value||4.5)/100
   }
  }};
+}
+
+function selectedStoryboardScenesForCaptionDrafts(){
+ const idea=currentData?.ideas?.[selectedIdea];
+ if(!idea||!Array.isArray(idea.scenes))return [];
+ const scenes=idea.scenes.map(scene=>({...scene}));
+ document.querySelectorAll('.scene').forEach((card,index)=>{
+  if(!scenes[index])return;
+  card.querySelectorAll('textarea[data-k]').forEach(input=>{
+   scenes[index][input.dataset.k]=input.value;
+  });
+ });
+ return scenes;
+}
+function prefillSubtitlesFromStoryboard(){
+ const status=document.getElementById('subtitlePrefillStatus');
+ const list=document.getElementById('subtitleCueList');
+ const scenes=selectedStoryboardScenesForCaptionDrafts();
+ if(!scenes.length){
+  if(status)status.textContent='Choose a concept with scene prompts before creating caption drafts.';
+  return;
+ }
+ const existing=list?.querySelectorAll('.subtitle-cue').length||0;
+ if(existing&&!window.confirm('Replace '+existing+' existing caption cue(s) with drafts from the selected storyboard? Your current caption edits will be lost. The new drafts will not be enabled for export.'))return;
+ let timelineSegments=null;
+ let timingNote='Timings use the storyboard scene ranges. Review them against the final trimmed/crossfaded export before burning captions in.';
+ if(assemblyQueue.length&&window.Reference2VideoVideoPreview){
+  const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(
+   assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
+  );
+  if(!plan.errors.length&&plan.segments.length===scenes.length){
+   timelineSegments=plan.segments;
+   timingNote='Timings were scaled to the loaded clip sequence, including current trims and crossfade overlaps.'+
+    (plan.requestedFallbackCount?' '+plan.requestedFallbackCount+' clip(s) still use requested-duration fallback rather than measured MP4 duration.':'');
+  }else if(plan.errors.length){
+   timingNote='The current clip queue has edit warnings, so storyboard timestamps were used. Fix the queue and review caption timing before export.';
+  }else if(plan.segments.length!==scenes.length){
+   timingNote='The loaded clip count does not match the storyboard scene count, so storyboard timestamps were used. Review timing against the final queue before export.';
+  }
+ }
+ const result=window.Reference2VideoStoryboardCaptions?.buildStoryboardCaptionDrafts(scenes,{
+  includeOnScreenText:document.getElementById('includeStoryboardOnScreenText')?.checked!==false,
+  timelineSegments
+ });
+ if(!result){
+  if(status)status.textContent='The storyboard caption helper did not load. Refresh the page and try again.';
+  return;
+ }
+ if(list)list.innerHTML='';
+ if(!result.captions.length){
+  if(list)list.innerHTML='<p class="subtitle-empty">No timed voice-over or on-screen text could be drafted. Check that storyboard scenes contain text and readable start–end times.</p>';
+  if(status)status.textContent=result.warnings.join(' ')||'No caption text was found in the selected storyboard.';
+  const burn=document.getElementById('subtitlesEnabled');if(burn)burn.checked=false;
+  renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+  return;
+ }
+ result.captions.forEach(cue=>addSubtitleCue(cue));
+ const burn=document.getElementById('subtitlesEnabled');
+ if(burn)burn.checked=false;
+ renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+ const parts=[
+  'Added '+result.captions.length+' editable draft cue(s) from '+scenes.length+' storyboard scene(s).',
+  timingNote,
+  'Review the wording and timing. Burn into export remains OFF until you enable it.'
+ ];
+ if(result.warnings.length)parts.push(result.warnings.join(' '));
+ if(status)status.textContent=parts.join(' ');
 }
 
 function renderAssemblyVideoPreview(){
@@ -759,7 +836,7 @@ document.getElementById('addSfxBtn')?.addEventListener('click',addSfxCue);
 const audioEditor=document.querySelector('.assembly-panel');
 audioEditor?.addEventListener('input',event=>{if(event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
 audioEditor?.addEventListener('change',event=>{if(event.target.matches('input[type="file"]')||event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
-document.getElementById('addSubtitleBtn')?.addEventListener('click',addSubtitleCue);
+document.getElementById('addSubtitleBtn')?.addEventListener('click',addSubtitleCue);document.getElementById('prefillSubtitlesBtn')?.addEventListener('click',prefillSubtitlesFromStoryboard);
 const subtitleEditor=document.querySelector('.subtitle-editor');
 subtitleEditor?.addEventListener('input',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
 subtitleEditor?.addEventListener('change',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
