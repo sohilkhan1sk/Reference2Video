@@ -181,8 +181,14 @@
       }
     });
 
-    captions.sort((a, b) => a.start_seconds - b.start_seconds || a.scene_number - b.scene_number ||
-      (a.source === "Voice-over" ? -1 : 1));
+    captions.sort((a, b) => {
+      const timeOrder = a.start_seconds - b.start_seconds;
+      if (timeOrder) return timeOrder;
+      const sceneOrder = a.scene_number - b.scene_number;
+      if (sceneOrder) return sceneOrder;
+      if (a.source === b.source) return 0;
+      return a.source === "Voice-over" ? -1 : 1;
+    });
     if (captions.length > MAX_CAPTIONS) {
       captions.length = MAX_CAPTIONS;
       warnings.push("Drafts were limited to " + MAX_CAPTIONS + " cues. Review the storyboard for omitted text.");
