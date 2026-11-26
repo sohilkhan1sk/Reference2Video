@@ -356,7 +356,7 @@ function addSubtitleCue(draft){
    if(status)status.textContent='A maximum of 200 subtitle cues can be added to one export.';
    return null;
   }
-  const isDraft=Boolean(draft&&typeof draft==='object');
+  const isDraft=Boolean(draft&&typeof draft==='object'&&draft.start_seconds!==undefined&&draft.end_seconds!==undefined);
   const previousEnds=Array.from(list.querySelectorAll('[data-subtitle-end]'))
    .map(input=>Number(input.value)).filter(value=>Number.isFinite(value)&&value>=0&&value<3600);
   const startSeconds=isDraft?Number(draft.start_seconds):(previousEnds.length?Math.max(...previousEnds):0);
@@ -836,7 +836,7 @@ document.getElementById('addSfxBtn')?.addEventListener('click',addSfxCue);
 const audioEditor=document.querySelector('.assembly-panel');
 audioEditor?.addEventListener('input',event=>{if(event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
 audioEditor?.addEventListener('change',event=>{if(event.target.matches('input[type="file"]')||event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
-document.getElementById('addSubtitleBtn')?.addEventListener('click',addSubtitleCue);document.getElementById('prefillSubtitlesBtn')?.addEventListener('click',prefillSubtitlesFromStoryboard);
+document.getElementById('addSubtitleBtn')?.addEventListener('click',()=>addSubtitleCue());document.getElementById('prefillSubtitlesBtn')?.addEventListener('click',prefillSubtitlesFromStoryboard);
 const subtitleEditor=document.querySelector('.subtitle-editor');
 subtitleEditor?.addEventListener('input',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
 subtitleEditor?.addEventListener('change',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
