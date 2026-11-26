@@ -117,7 +117,7 @@ The assembly editor includes an optional caption panel. Enable it, add timed cue
 - Captions are previewed as a text overlay on the synchronized scene monitor at the current playhead.
 - On export, the server validates all cue ranges against the computed final timeline, writes a temporary SRT file, and burns it into the joined silent MP4 before the optional narration/music/SFX mux.
 - The same caption timing is used for 16:9 (1280×720) and 9:16 (720×1280); font size and margins scale with output height.
-- This is manual caption entry. Speech-to-text, automatic subtitle generation, editable caption animation and separate selectable subtitle streams are not included.
+- This is manual caption editing with optional storyboard-derived draft prefill. Speech-to-text/ASR, automatic transcription, editable caption animation and separate selectable subtitle streams are not included.
 - Burn-in requires an FFmpeg build that contains the subtitles filter with libass support (--enable-libass). The worker checks the configured binary before processing. If the check fails, set FFMPEG_PATH to a full FFmpeg build with libass; non-captioned assembly continues to work with the existing binary.
 - Caption text is validated and style choices are allow-listed. User text cannot pass arbitrary ASS style overrides into the FFmpeg filter.
 
