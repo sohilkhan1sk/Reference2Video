@@ -35,6 +35,10 @@ jobs:
         run: node --check static/audio_preview.js
       - name: Test audio preview planning and waveforms
         run: node --test tests/test_audio_preview.js
+      - name: Check storyboard caption helper syntax
+        run: node --check static/storyboard_captions.js
+      - name: Test storyboard-to-caption draft generation
+        run: node --test tests/test_storyboard_captions.js
       - name: Check synchronized video preview module syntax
         run: node --check static/assembly_video_preview.js
       - name: Test synchronized video sequence planning
