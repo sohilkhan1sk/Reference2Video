@@ -184,3 +184,51 @@ test("portrait export selection creates a portrait video monitor frame", async (
   await expect(frame).toBeVisible();
   expect(await frame.evaluate(element => element.style.aspectRatio)).toBe("9 / 16");
 });
+
+
+test("storyboard prefill creates editable voice-over and on-screen drafts mapped to the queued crossfade timeline", async ({ page }) => {
+  await openStudio(page);
+  await page.locator('[data-scene-edit="transition_after"][data-job="job-a"]').selectOption("crossfade");
+
+  await page.evaluate(() => {
+    currentData = {
+      ideas: [{
+        title: "Browser storyboard test",
+        scenes: [
+          {
+            scene: 1, time: "00:00–00:05", purpose: "Opening",
+            visual_prompt: "Opening scene", video_prompt: "Opening motion",
+            camera_and_motion: "Slow push", on_screen_text: "THE FIRST SCENE",
+            voiceover: "Narration for the first scene.", sound_design: "Soft impact"
+          },
+          {
+            scene: 2, time: "00:05–00:10", purpose: "Follow-up",
+            visual_prompt: "Second scene", video_prompt: "Second motion",
+            camera_and_motion: "Tracking shot", on_screen_text: "THE NEXT SCENE",
+            voiceover: "Narration for the second scene.", sound_design: "Whoosh"
+          }
+        ]
+      }]
+    };
+    selectedIdea = 0;
+    drawScenes();
+  });
+
+  await page.locator("#prefillSubtitlesBtn").click();
+  await expect(page.locator(".subtitle-cue")).toHaveCount(4);
+  await expect(page.locator("#subtitlesEnabled")).not.toBeChecked();
+
+  const cues = await page.locator(".subtitle-cue").evaluateAll(rows => rows.map(row => ({
+    start: Number(row.querySelector("[data-subtitle-start]").value),
+    end: Number(row.querySelector("[data-subtitle-end]").value),
+    text: row.querySelector("[data-subtitle-text]").value,
+    source: row.querySelector(".subtitle-cue-source").textContent
+  })));
+  expect(cues.some(cue => cue.source.includes("VOICE-OVER"))).toBe(true);
+  expect(cues.some(cue => cue.source.includes("ON-SCREEN TEXT"))).toBe(true);
+  const secondVoiceover = cues.find(cue => cue.source.includes("VOICE-OVER") && cue.text.includes("second scene"));
+  expect(secondVoiceover).toBeTruthy();
+  expect(secondVoiceover.start).toBeCloseTo(2.5, 1);
+  expect(secondVoiceover.end).toBeCloseTo(5.5, 1);
+  await expect(page.locator("#subtitlePrefillStatus")).toContainText("scaled to the loaded clip sequence");
+});
