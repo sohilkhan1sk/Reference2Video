@@ -68,7 +68,7 @@
     const raw = Array.isArray(value) ? value.join(" ") : value;
     if (typeof raw !== "string") return "";
     const text = raw.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
-    if (!text || /^(?:none|n\/a|na|nil|not applicable|no voice[ -]?over|no on[ -]?screen text|—|-)\\.?$/i.test(text)) {
+    if (!text || /^(?:none|n\/a|na|nil|not applicable|no voice[ -]?over|no on[ -]?screen text|—|-)\.?$/i.test(text)) {
       return "";
     }
     return text;
