@@ -110,6 +110,8 @@ API:
 
 ## Manual subtitle editing and burned-in captions
 
+The caption editor can prefill editable draft cues from the currently selected storyboard and the user's scene-text edits. Voice-over is split into readable two-line cues; on-screen text can be added as separate cues. When the assembly queue contains one valid completed clip per storyboard scene, draft times are proportionally mapped to the current measured/trimmed clip durations and crossfade offsets. Otherwise the original storyboard time ranges are used and the editor warns that timing needs manual review. Prefill runs locally in the browser, makes no Gemini/ASR/TTS request, and deliberately leaves “Burn into export” unchecked; every cue remains editable before export.
+
 The assembly editor includes an optional caption panel. Enable it, add timed cues, and set each cue's start/end seconds against the **final trimmed/crossfaded timeline**. Up to 200 cues are accepted; each cue is limited to two lines and 220 characters. Choose top/middle/bottom placement, white/yellow/cyan text, and a font-size ratio that scales with the selected 720p output height.
 
 - Captions are previewed as a text overlay on the synchronized scene monitor at the current playhead.
