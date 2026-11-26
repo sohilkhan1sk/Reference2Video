@@ -169,3 +169,13 @@
  .subtitle-cue-fields .subtitle-text-label{grid-column:1/-1}
  .subtitle-cue .subtitle-remove{align-self:flex-end}
 }
+
+
+/* Storyboard-to-caption draft controls */
+.subtitle-prefill-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:12px 0 6px;padding:10px;border:1px solid #31555a;border-radius:8px;background:#10232a}
+.subtitle-prefill-tools label{display:flex!important;align-items:center;gap:7px;color:#c3d8d5!important;font-size:10px!important;letter-spacing:0!important}
+.subtitle-prefill-tools input{accent-color:#65c4ad}
+.subtitle-prefill-tools button{flex-shrink:0}
+.subtitle-prefill-status{margin:6px 0 10px;padding:8px 10px;border-left:2px solid #65c4ad;background:#0d2028;color:#a9c8c5;font-size:10px;line-height:1.5}
+.subtitle-cue-source{display:block;margin:0 0 3px;color:#e4d59d;font-size:8px;font-weight:700;letter-spacing:.55px}
+@media(max-width:720px){.subtitle-prefill-tools{align-items:stretch}.subtitle-prefill-tools button{width:100%}}
