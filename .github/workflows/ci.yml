@@ -39,6 +39,10 @@ jobs:
         run: node --check static/storyboard_captions.js
       - name: Test storyboard-to-caption draft generation
         run: node --test tests/test_storyboard_captions.js
+      - name: Check subtitle timeline module syntax
+        run: node --check static/subtitle_timeline.js
+      - name: Test subtitle timeline editing operations
+        run: node --test tests/test_subtitle_timeline.js
       - name: Check synchronized video preview module syntax
         run: node --check static/assembly_video_preview.js
       - name: Test synchronized video sequence planning
