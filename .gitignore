@@ -4,3 +4,7 @@ __pycache__/
 uploads/*
 generated/*
 reference2video.sqlite3*
+node_modules/
+playwright-report/
+test-results/
+tests/browser/fixtures/*.mp4

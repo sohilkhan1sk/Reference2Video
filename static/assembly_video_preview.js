@@ -101,5 +101,32 @@ function locateSegmentAtTime(plan,seconds){
  const offset=Math.max(0,Math.min(chosen.durationSeconds,time-chosen.startSeconds));
  return {segment:chosen,timelineSeconds:time,offsetSeconds:chosen.trimStartSeconds+offset};
 }
-return {buildVideoSequencePlan,locateSegmentAtTime,isGeneratedVideoPath,resolveClipDuration};
+
+function locateLayersAtTime(plan,seconds){
+ const segments=plan&&Array.isArray(plan.segments)?plan.segments:[];
+ if(!segments.length)return {timeSeconds:0,isCrossfade:false,progress:0,layers:[]};
+ const total=Math.max(0,Number(plan.durationSeconds)||0),n=Number(seconds);
+ const time=Math.min(total,Math.max(0,Number.isFinite(n)?n:0));
+ if(!Array.isArray(plan.errors)||plan.errors.length===0){
+  for(let index=0;index<segments.length-1;index++){
+   const outgoing=segments[index],incoming=segments[index+1];
+   if(outgoing.transitionAfter!=="crossfade")continue;
+   const overlapStart=incoming.startSeconds,overlapEnd=outgoing.endSeconds;
+   if(!(overlapEnd>overlapStart)||time<overlapStart||time>=overlapEnd)continue;
+   const progress=Math.max(0,Math.min(1,(time-overlapStart)/(overlapEnd-overlapStart)));
+   const offsetFor=segment=>segment.trimStartSeconds+Math.max(0,Math.min(segment.durationSeconds,time-segment.startSeconds));
+   return {
+    timeSeconds:time,isCrossfade:true,progress,
+    layers:[
+     {segment:outgoing,offsetSeconds:offsetFor(outgoing),opacity:1,role:"outgoing"},
+     {segment:incoming,offsetSeconds:offsetFor(incoming),opacity:progress,role:"incoming"}
+    ]
+   };
+  }
+ }
+ const located=locateSegmentAtTime(plan,time);
+ return {timeSeconds:time,isCrossfade:false,progress:0,layers:located?[{segment:located.segment,offsetSeconds:located.offsetSeconds,opacity:1,role:"single"}]:[]};
+}
+
+return {buildVideoSequencePlan,locateSegmentAtTime,locateLayersAtTime,isGeneratedVideoPath,resolveClipDuration};
 });
