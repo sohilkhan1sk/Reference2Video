@@ -232,3 +232,62 @@ test("storyboard prefill creates editable voice-over and on-screen drafts mapped
   expect(secondVoiceover.end).toBeCloseTo(5.5, 1);
   await expect(page.locator("#subtitlePrefillStatus")).toContainText("scaled to the loaded clip sequence");
 });
+
+
+test("subtitle timeline splits at the playhead and merges neighboring selected cues", async ({ page }) => {
+  await openStudio(page);
+  await page.locator("#subtitlesEnabled").check();
+  await page.locator("#addSubtitleBtn").click();
+  const cue = page.locator(".subtitle-cue").first();
+  await cue.locator("[data-subtitle-start]").fill("0");
+  await cue.locator("[data-subtitle-end]").fill("2");
+  await cue.locator("[data-subtitle-text]").fill("This caption can split into two parts");
+
+  await page.locator(".subtitle-timeline-block").click();
+  await setPlayhead(page, 1);
+  await page.locator("#splitSubtitleBtn").click();
+  await expect(page.locator(".subtitle-cue")).toHaveCount(2);
+  const rows = page.locator(".subtitle-cue");
+  expect(await rows.nth(0).locator("[data-subtitle-start]").inputValue()).toBe("0");
+  expect(await rows.nth(0).locator("[data-subtitle-end]").inputValue()).toBe("1");
+  expect(await rows.nth(1).locator("[data-subtitle-start]").inputValue()).toBe("1");
+  expect(await rows.nth(1).locator("[data-subtitle-end]").inputValue()).toBe("2");
+  await expect(page.locator("#mergeSubtitleBtn")).toBeEnabled();
+
+  await page.locator("#mergeSubtitleBtn").click();
+  await expect(page.locator(".subtitle-cue")).toHaveCount(1);
+  expect(await page.locator("[data-subtitle-text]").inputValue()).toBe("This caption can split into two parts");
+  expect(await page.locator("[data-subtitle-end]").inputValue()).toBe("2");
+});
+
+test("subtitle timeline drag moves a cue and its end handle resizes it", async ({ page }) => {
+  await openStudio(page);
+  await page.locator("#subtitlesEnabled").check();
+  await page.locator("#addSubtitleBtn").click();
+  const cue = page.locator(".subtitle-cue").first();
+  await cue.locator("[data-subtitle-start]").fill("0");
+  await cue.locator("[data-subtitle-end]").fill("2");
+  await cue.locator("[data-subtitle-text]").fill("Drag and resize this caption");
+
+  const lane = page.locator("#subtitleTimelineLane");
+  const laneBox = await lane.boundingBox();
+  const block = page.locator(".subtitle-timeline-block").first();
+  const blockBox = await block.boundingBox();
+  await page.mouse.move(blockBox.x + blockBox.width / 2, blockBox.y + blockBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(blockBox.x + blockBox.width / 2 + laneBox.width * 0.1, blockBox.y + blockBox.height / 2, {steps:5});
+  await page.mouse.up();
+  const startAfterMove = Number(await cue.locator("[data-subtitle-start]").inputValue());
+  const endAfterMove = Number(await cue.locator("[data-subtitle-end]").inputValue());
+  expect(startAfterMove).toBeGreaterThan(0.4);
+  expect(endAfterMove - startAfterMove).toBeCloseTo(2, 1);
+
+  const endHandle = page.locator(".subtitle-timeline-block [data-subtitle-edge='end']").first();
+  const handleBox = await endHandle.boundingBox();
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handleBox.x + handleBox.width / 2 + laneBox.width * 0.08, handleBox.y + handleBox.height / 2, {steps:5});
+  await page.mouse.up();
+  const resizedEnd = Number(await cue.locator("[data-subtitle-end]").inputValue());
+  expect(resizedEnd).toBeGreaterThan(endAfterMove + 0.2);
+});
