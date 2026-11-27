@@ -329,11 +329,11 @@ function safeCaptionText(value){
  return String(value||'').replaceAll('\\','＼').replaceAll('{','｛').replaceAll('}','｝').replaceAll('<','＜').replaceAll('>','＞');
 }
 function renderSubtitleOverlay(seconds){
+ const time=Number(seconds)||0;
+ updateSubtitleTimelinePlayhead(time);
  const overlay=document.getElementById('subtitlePreviewOverlay');
  if(!overlay)return;
  const enabled=document.getElementById('subtitlesEnabled')?.checked;
- const time=Number(seconds)||0;
- updateSubtitleTimelinePlayhead(time);
  const cues=Array.from(document.querySelectorAll('.subtitle-cue')).map(row=>({
   start:Number(row.querySelector('[data-subtitle-start]')?.value),
   end:Number(row.querySelector('[data-subtitle-end]')?.value),
@@ -535,7 +535,7 @@ function renderSubtitleTimeline(){
  const layout=helper.layoutCues(cues,duration),laneCount=layout.reduce((max,cue)=>Math.max(max,cue.lane+1),0);
  ruler.innerHTML=Array.from({length:5},(_,index)=>'<span class=\"subtitle-timeline-tick\" style=\"left:'+(index*25)+'%\">'+subtitleTimeLabel(duration*index/4)+'</span>').join('');
  lane.innerHTML=layout.map(cue=>{
-  const label=String(cue.text||'').replace(/\\s+/g,' ').trim();
+  const label=String(cue.text||'').replace(/\s+/g,' ').trim();
   return '<div class=\"subtitle-timeline-block'+(cue.clippedAfter?' is-out-of-range':'')+'\" data-subtitle-block=\"1\" data-subtitle-id=\"'+esc(cue.id)+'\" role=\"button\" tabindex=\"0\" aria-pressed=\"'+(selectedSubtitleCueIds.has(cue.id)?'true':'false')+'\" title=\"'+esc(subtitleTimeLabel(cue.start)+'–'+subtitleTimeLabel(cue.end)+' · '+label)+'\" style=\"left:'+cue.leftPercent+'%;width:'+cue.widthPercent+'%;top:'+(8+cue.lane*36)+'px\">'+
    '<span class=\"subtitle-timeline-handle\" data-subtitle-edge=\"start\" aria-hidden=\"true\"></span><span class=\"subtitle-timeline-block-label\">'+esc(label||'Untitled caption')+'</span><span class=\"subtitle-timeline-handle\" data-subtitle-edge=\"end\" aria-hidden=\"true\"></span></div>';
  }).join('');
@@ -573,7 +573,7 @@ function onSubtitleTimelinePointerDown(event){
   if(next.error)return;writeSubtitleCue(row,next);
   block.style.left=(Math.max(0,Math.min(duration,next.start))/duration*100)+'%';
   block.style.width=(Math.max(0,Math.min(duration,next.end)-Math.max(0,next.start))/duration*100)+'%';
-  block.title=subtitleTimeLabel(next.start)+'–'+subtitleTimeLabel(next.end)+' · '+String(next.text||'').replace(/\\s+/g,' ').trim();renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+  block.title=subtitleTimeLabel(next.start)+'–'+subtitleTimeLabel(next.end)+' · '+String(next.text||'').replace(/\s+/g,' ').trim();renderSubtitleOverlay(audioTimelinePlayheadSeconds);
  };
  const onUp=()=>{window.removeEventListener('pointermove',onMove);window.removeEventListener('pointerup',onUp);window.removeEventListener('pointercancel',onUp);renderSubtitleTimeline();};
  window.addEventListener('pointermove',onMove);window.addEventListener('pointerup',onUp,{once:true});window.addEventListener('pointercancel',onUp,{once:true});
