@@ -531,6 +531,7 @@ function renderSubtitleTimeline(){
  const helper=window.Reference2VideoSubtitleTimeline;
  if(!helper){lane.innerHTML='<p class=\"subtitle-timeline-empty\">Subtitle timeline helper did not load. Refresh the page.</p>';return;}
  const cues=subtitleCueRows(),duration=subtitleTimelineDuration();lane.dataset.duration=String(duration);
+ const durationLabel=document.getElementById('subtitleTimelineDuration');if(durationLabel)durationLabel.textContent=subtitleTimeLabel(duration)+' total';
  const layout=helper.layoutCues(cues,duration),laneCount=layout.reduce((max,cue)=>Math.max(max,cue.lane+1),0);
  ruler.innerHTML=Array.from({length:5},(_,index)=>'<span class=\"subtitle-timeline-tick\" style=\"left:'+(index*25)+'%\">'+subtitleTimeLabel(duration*index/4)+'</span>').join('');
  lane.innerHTML=layout.map(cue=>{
@@ -581,6 +582,7 @@ function splitSelectedSubtitleCue(){
  const status=document.getElementById('subtitleTimelineStatus');
  if(selectedSubtitleCueIds.size!==1){if(status)status.textContent='Select one caption block, then place the playhead inside it before splitting.';return;}
  const id=Array.from(selectedSubtitleCueIds)[0],item=subtitleCueRows().find(cue=>cue.id===id);if(!item)return;
+ if(document.querySelectorAll('#subtitleCueList .subtitle-cue').length>=200){if(status)status.textContent='A maximum of 200 subtitle cues can be added to one export.';return;}
  const result=window.Reference2VideoSubtitleTimeline.splitCue(item,audioTimelinePlayheadSeconds);
  if(result.error){if(status)status.textContent=result.error;return;}
  writeSubtitleCue(item.row,result.first);
