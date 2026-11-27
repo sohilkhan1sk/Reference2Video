@@ -1,5 +1,7 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
 let currentData=null,selectedIdea=0,assemblyQueue=[],assemblyEditsById={},recentJobsById={},assemblyVideoPreviewState=null,assemblyVideoSyncRaf=0;
+let subtitleCueSequence=0;
+const selectedSubtitleCueIds=new Set();
 fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
@@ -331,6 +333,7 @@ function renderSubtitleOverlay(seconds){
  if(!overlay)return;
  const enabled=document.getElementById('subtitlesEnabled')?.checked;
  const time=Number(seconds)||0;
+ updateSubtitleTimelinePlayhead(time);
  const cues=Array.from(document.querySelectorAll('.subtitle-cue')).map(row=>({
   start:Number(row.querySelector('[data-subtitle-start]')?.value),
   end:Number(row.querySelector('[data-subtitle-end]')?.value),
@@ -369,21 +372,22 @@ function addSubtitleCue(draft){
   list.querySelector('.subtitle-empty')?.remove();
   const row=document.createElement('div');
   row.className='subtitle-cue';
+  row.dataset.subtitleId='subtitle-'+(++subtitleCueSequence);
   row.innerHTML='<div class="subtitle-cue-fields"><label>START (SEC)<input type="number" data-subtitle-start min="0" max="3600" step="0.1"></label><label>END (SEC)<input type="number" data-subtitle-end min="0" max="3600" step="0.1"></label><label class="subtitle-text-label"><small class="subtitle-cue-source"></small>CAPTION TEXT<textarea data-subtitle-text maxlength="220" rows="2" placeholder="Type the caption shown on screen"></textarea></label></div><button type="button" class="secondary subtitle-remove">Remove</button>';
   row.querySelector('[data-subtitle-start]').value=String(startSeconds);
   row.querySelector('[data-subtitle-end]').value=String(endSeconds);
   row.querySelector('[data-subtitle-text]').value=isDraft?String(draft.text||''):'';
   const sourceLabel=row.querySelector('.subtitle-cue-source');
   sourceLabel.textContent=isDraft
-   ?('SCENE '+String(draft.scene_number||'').padStart(2,'0')+' · '+String(draft.source||'STORYBOARD DRAFT').toUpperCase())
+   ?(draft.source==='SPLIT CAPTION'?'SPLIT CAPTION':('SCENE '+String(draft.scene_number||'').padStart(2,'0')+' · '+String(draft.source||'STORYBOARD DRAFT').toUpperCase()))
    :'MANUAL CUE';
   row.querySelector('.subtitle-remove').addEventListener('click',()=>{
-   row.remove();
+   selectedSubtitleCueIds.delete(row.dataset.subtitleId);row.remove();
    if(!list.querySelector('.subtitle-cue'))list.innerHTML='<p class="subtitle-empty">No captions yet. Add a cue, then enter its start/end time and text.</p>';
-   renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+   renderSubtitleOverlay(audioTimelinePlayheadSeconds);renderSubtitleTimeline();
   });
-  list.appendChild(row);
-  renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+  list.appendChild(row);selectedSubtitleCueIds.clear();selectedSubtitleCueIds.add(row.dataset.subtitleId);
+  renderSubtitleOverlay(audioTimelinePlayheadSeconds);renderSubtitleTimeline();
   return row;
 }
 
@@ -468,11 +472,13 @@ function prefillSubtitlesFromStoryboard(){
   return;
  }
  if(list)list.innerHTML='';
+ selectedSubtitleCueIds.clear();
  if(!result.captions.length){
   if(list)list.innerHTML='<p class="subtitle-empty">No timed voice-over or on-screen text could be drafted. Check that storyboard scenes contain text and readable start–end times.</p>';
   if(status)status.textContent=result.warnings.join(' ')||'No caption text was found in the selected storyboard.';
   const burn=document.getElementById('subtitlesEnabled');if(burn)burn.checked=false;
   renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+  renderSubtitleTimeline();
   return;
  }
  result.captions.forEach(cue=>addSubtitleCue(cue));
@@ -486,6 +492,126 @@ function prefillSubtitlesFromStoryboard(){
  ];
  if(result.warnings.length)parts.push(result.warnings.join(' '));
  if(status)status.textContent=parts.join(' ');
+ renderSubtitleTimeline();
+}
+
+
+function subtitleCueRows(){
+ return Array.from(document.querySelectorAll('#subtitleCueList .subtitle-cue')).map((row,index)=>{
+  if(!row.dataset.subtitleId)row.dataset.subtitleId='subtitle-'+(++subtitleCueSequence);
+  return {id:row.dataset.subtitleId,start:Number(row.querySelector('[data-subtitle-start]')?.value),end:Number(row.querySelector('[data-subtitle-end]')?.value),text:row.querySelector('[data-subtitle-text]')?.value||'',row,index};
+ });
+}
+function subtitleTimelineDuration(){
+ if(assemblyQueue.length){
+  const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById);
+  if(!plan.errors.length&&Number.isFinite(plan.durationSeconds)&&plan.durationSeconds>0)return plan.durationSeconds;
+ }
+ const maxEnd=subtitleCueRows().reduce((max,cue)=>Number.isFinite(cue.end)?Math.max(max,cue.end):max,0);
+ return Math.max(30,Math.ceil(maxEnd/5)*5,audioTimelinePlayheadSeconds||0);
+}
+function subtitleTimeLabel(seconds){
+ const value=Math.max(0,Number(seconds)||0),hours=Math.floor(value/3600),minutes=Math.floor((value%3600)/60),whole=Math.floor(value%60),tenth=Math.round((value-Math.floor(value))*10);
+ return (hours?String(hours).padStart(2,'0')+':':'')+String(minutes).padStart(2,'0')+':'+String(whole).padStart(2,'0')+'.'+tenth;
+}
+function syncSubtitleTimelineSelection(){
+ document.querySelectorAll('.subtitle-timeline-block').forEach(block=>{const selected=selectedSubtitleCueIds.has(block.dataset.subtitleId);block.classList.toggle('is-selected',selected);block.setAttribute('aria-pressed',selected?'true':'false');});
+ document.querySelectorAll('#subtitleCueList .subtitle-cue').forEach(row=>row.classList.toggle('is-selected',selectedSubtitleCueIds.has(row.dataset.subtitleId)));
+ const split=document.getElementById('splitSubtitleBtn'),merge=document.getElementById('mergeSubtitleBtn');
+ if(split)split.disabled=selectedSubtitleCueIds.size!==1;if(merge)merge.disabled=selectedSubtitleCueIds.size!==2;
+}
+function updateSubtitleTimelinePlayhead(seconds){
+ const lane=document.getElementById('subtitleTimelineLane');if(!lane)return;
+ const duration=Number(lane.dataset.duration)||30,marker=document.getElementById('subtitleTimelinePlayhead');
+ if(marker)marker.style.left=(Math.max(0,Math.min(duration,Number(seconds)||0))/duration*100)+'%';
+ const label=document.getElementById('subtitleTimelinePlayheadLabel');if(label)label.textContent=subtitleTimeLabel(seconds);
+}
+function renderSubtitleTimeline(){
+ const lane=document.getElementById('subtitleTimelineLane'),ruler=document.getElementById('subtitleTimelineRuler');if(!lane||!ruler)return;
+ const helper=window.Reference2VideoSubtitleTimeline;
+ if(!helper){lane.innerHTML='<p class=\"subtitle-timeline-empty\">Subtitle timeline helper did not load. Refresh the page.</p>';return;}
+ const cues=subtitleCueRows(),duration=subtitleTimelineDuration();lane.dataset.duration=String(duration);
+ const layout=helper.layoutCues(cues,duration),laneCount=layout.reduce((max,cue)=>Math.max(max,cue.lane+1),0);
+ ruler.innerHTML=Array.from({length:5},(_,index)=>'<span class=\"subtitle-timeline-tick\" style=\"left:'+(index*25)+'%\">'+subtitleTimeLabel(duration*index/4)+'</span>').join('');
+ lane.innerHTML=layout.map(cue=>{
+  const label=String(cue.text||'').replace(/\\s+/g,' ').trim();
+  return '<div class=\"subtitle-timeline-block'+(cue.clippedAfter?' is-out-of-range':'')+'\" data-subtitle-block=\"1\" data-subtitle-id=\"'+esc(cue.id)+'\" role=\"button\" tabindex=\"0\" aria-pressed=\"'+(selectedSubtitleCueIds.has(cue.id)?'true':'false')+'\" title=\"'+esc(subtitleTimeLabel(cue.start)+'–'+subtitleTimeLabel(cue.end)+' · '+label)+'\" style=\"left:'+cue.leftPercent+'%;width:'+cue.widthPercent+'%;top:'+(8+cue.lane*36)+'px\">'+
+   '<span class=\"subtitle-timeline-handle\" data-subtitle-edge=\"start\" aria-hidden=\"true\"></span><span class=\"subtitle-timeline-block-label\">'+esc(label||'Untitled caption')+'</span><span class=\"subtitle-timeline-handle\" data-subtitle-edge=\"end\" aria-hidden=\"true\"></span></div>';
+ }).join('');
+ if(!layout.length)lane.innerHTML='<p class=\"subtitle-timeline-empty\">Add a caption to see it on the timeline. Click an empty area to move the playhead.</p>';
+ lane.style.height=Math.max(58,(laneCount||1)*36+16)+'px';
+ const marker=document.createElement('div');marker.className='subtitle-timeline-playhead';marker.id='subtitleTimelinePlayhead';marker.setAttribute('aria-hidden','true');lane.appendChild(marker);
+ updateSubtitleTimelinePlayhead(audioTimelinePlayheadSeconds);syncSubtitleTimelineSelection();
+}
+function writeSubtitleCue(row,cue){
+ if(!row||!cue)return;
+ const start=row.querySelector('[data-subtitle-start]'),end=row.querySelector('[data-subtitle-end]'),text=row.querySelector('[data-subtitle-text]');
+ if(start)start.value=String(cue.start);if(end)end.value=String(cue.end);if(text)text.value=String(cue.text||'');
+}
+function selectSubtitleCue(id,multi){
+ if(!id)return;
+ if(multi){if(selectedSubtitleCueIds.has(id))selectedSubtitleCueIds.delete(id);else selectedSubtitleCueIds.add(id);}
+ else{selectedSubtitleCueIds.clear();selectedSubtitleCueIds.add(id);}
+ syncSubtitleTimelineSelection();
+}
+function subtitleTimelineSeekAt(clientX,lane){
+ const rect=lane.getBoundingClientRect();if(!rect.width)return;
+ const duration=Number(lane.dataset.duration)||30,seconds=Math.max(0,Math.min(duration,(clientX-rect.left)/rect.width*duration)),seek=document.getElementById('audioTimelineSeek');
+ if(seek){seek.value=String(seconds);seek.dispatchEvent(new Event('input',{bubbles:true}));}
+ else{audioTimelinePlayheadSeconds=seconds;syncAssemblyVideoPreview(seconds,false);renderSubtitleOverlay(seconds);}
+}
+function onSubtitleTimelinePointerDown(event){
+ const lane=event.currentTarget,block=event.target.closest('[data-subtitle-block]');
+ if(!block){subtitleTimelineSeekAt(event.clientX,lane);return;}
+ event.preventDefault();const id=block.dataset.subtitleId;selectSubtitleCue(id,event.shiftKey);
+ const initial=subtitleCueRows().find(item=>item.id===id),rect=lane.getBoundingClientRect();if(!initial||!rect.width)return;
+ const edge=event.target.closest('[data-subtitle-edge]')?.dataset.subtitleEdge||'',duration=Number(lane.dataset.duration)||30,startX=event.clientX,row=initial.row;
+ const onMove=moveEvent=>{
+  const dx=moveEvent.clientX-startX;if(Math.abs(dx)<2)return;
+  const delta=dx/rect.width*duration,next=edge?window.Reference2VideoSubtitleTimeline.resizeCue(initial,edge,delta,duration):window.Reference2VideoSubtitleTimeline.moveCue(initial,delta,duration);
+  if(next.error)return;writeSubtitleCue(row,next);
+  block.style.left=(Math.max(0,Math.min(duration,next.start))/duration*100)+'%';
+  block.style.width=(Math.max(0,Math.min(duration,next.end)-Math.max(0,next.start))/duration*100)+'%';
+  block.title=subtitleTimeLabel(next.start)+'–'+subtitleTimeLabel(next.end)+' · '+String(next.text||'').replace(/\\s+/g,' ').trim();renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+ };
+ const onUp=()=>{window.removeEventListener('pointermove',onMove);window.removeEventListener('pointerup',onUp);window.removeEventListener('pointercancel',onUp);renderSubtitleTimeline();};
+ window.addEventListener('pointermove',onMove);window.addEventListener('pointerup',onUp,{once:true});window.addEventListener('pointercancel',onUp,{once:true});
+}
+function splitSelectedSubtitleCue(){
+ const status=document.getElementById('subtitleTimelineStatus');
+ if(selectedSubtitleCueIds.size!==1){if(status)status.textContent='Select one caption block, then place the playhead inside it before splitting.';return;}
+ const id=Array.from(selectedSubtitleCueIds)[0],item=subtitleCueRows().find(cue=>cue.id===id);if(!item)return;
+ const result=window.Reference2VideoSubtitleTimeline.splitCue(item,audioTimelinePlayheadSeconds);
+ if(result.error){if(status)status.textContent=result.error;return;}
+ writeSubtitleCue(item.row,result.first);
+ const added=addSubtitleCue({start_seconds:result.second.start,end_seconds:result.second.end,text:result.second.text,source:'SPLIT CAPTION'});if(!added)return;
+ selectedSubtitleCueIds.clear();selectedSubtitleCueIds.add(id);selectedSubtitleCueIds.add(added.dataset.subtitleId);
+ renderSubtitleTimeline();renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+ if(status)status.textContent='Caption split at '+subtitleTimeLabel(audioTimelinePlayheadSeconds)+'. Both new cues are selected.';
+}
+function mergeSelectedSubtitleCues(){
+ const status=document.getElementById('subtitleTimelineStatus'),rows=subtitleCueRows(),result=window.Reference2VideoSubtitleTimeline.mergeCues(rows,Array.from(selectedSubtitleCueIds));
+ if(result.error){if(status)status.textContent=result.error;return;}
+ const first=rows.find(cue=>cue.id===result.cue.id),selected=Array.from(selectedSubtitleCueIds).map(id=>rows.find(cue=>cue.id===id)).filter(Boolean);
+ if(!first||selected.length!==2)return;
+ const second=selected.find(cue=>cue.id!==first.id);writeSubtitleCue(first.row,result.cue);
+ selectedSubtitleCueIds.clear();selectedSubtitleCueIds.add(first.id);second.row.remove();
+ if(!document.querySelector('#subtitleCueList .subtitle-cue'))document.getElementById('subtitleCueList').innerHTML='<p class=\"subtitle-empty\">No captions yet. Add a cue, then enter its start/end time and text.</p>';
+ renderSubtitleTimeline();renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+ if(status)status.textContent='Merged two neighboring captions into one editable cue.';
+}
+function bindSubtitleTimeline(){
+ const lane=document.getElementById('subtitleTimelineLane');
+ if(lane&&!lane.dataset.bound){
+  lane.dataset.bound='1';lane.addEventListener('pointerdown',onSubtitleTimelinePointerDown);
+  lane.addEventListener('keydown',event=>{const block=event.target.closest('[data-subtitle-block]');if(block&&(event.key==='Enter'||event.key===' ')){event.preventDefault();selectSubtitleCue(block.dataset.subtitleId,event.shiftKey);}});
+ }
+ const list=document.getElementById('subtitleCueList');
+ if(list&&!list.dataset.selectionBound){
+  list.dataset.selectionBound='1';list.addEventListener('click',event=>{const row=event.target.closest('.subtitle-cue');if(row&&!event.target.closest('input,textarea,button'))selectSubtitleCue(row.dataset.subtitleId,event.shiftKey);});
+ }
+ document.getElementById('splitSubtitleBtn')?.addEventListener('click',splitSelectedSubtitleCue);
+ document.getElementById('mergeSubtitleBtn')?.addEventListener('click',mergeSelectedSubtitleCues);
 }
 
 function renderAssemblyVideoPreview(){
@@ -494,7 +620,7 @@ function renderAssemblyVideoPreview(){
  const plan=window.Reference2VideoVideoPreview.buildVideoSequencePlan(
   assemblyQueue.map(id=>recentJobsById[id]),assemblyEditsById
  );
- if(!plan.segments.length){assemblyVideoPreviewState=null;panel.innerHTML='<div class="video-preview-empty">Add available completed clips from history to preview the scene sequence.</div>';return;}
+ if(!plan.segments.length){assemblyVideoPreviewState=null;panel.innerHTML='<div class="video-preview-empty">Add available completed clips from history to preview the scene sequence.</div>';renderSubtitleTimeline();return;}
  const segments=plan.segments.map(segment=>'<span class="video-sequence-segment" style="left:'+segment.startPercent+'%;width:'+segment.widthPercent+'%" title="'+esc(segment.title)+' · '+window.Reference2VideoTimeline.formatTime(segment.durationSeconds)+' · '+segment.durationSource+' duration">'+esc(segment.title)+'</span>').join('');
  const timingNote=(plan.requestedFallbackCount===0
   ?'All source lengths use ffprobe-measured MP4 durations.'
@@ -515,6 +641,7 @@ function renderAssemblyVideoPreview(){
   shouldPlay:false
  };
  syncAssemblyVideoPreview(0,false);
+ renderSubtitleTimeline();
 }
 
 function drawAudioWaveform(canvas,buffer,spec,lane){
@@ -686,10 +813,12 @@ async function renderAudioTimeline(){
  const totalDuration=scenePlan.durationSeconds;
  if(!assemblyQueue.length){
   root.innerHTML='<div class="audio-timeline-empty">Add completed clips from history to build the timeline preview.</div>';
+  renderSubtitleTimeline();
   return;
  }
  if(totalDuration<=0){
   root.innerHTML='<div class="audio-timeline-empty">Clip durations are unavailable. Reload generation history before previewing the timeline.</div>';
+  renderSubtitleTimeline();
   return;
  }
 
@@ -808,6 +937,7 @@ async function renderAudioTimeline(){
   });
  if(stop)stop.addEventListener('click',()=>stopAudioPreview());
  updatePlayhead();
+ renderSubtitleTimeline();
 }
 
 function addSfxCue(){
@@ -838,8 +968,9 @@ audioEditor?.addEventListener('input',event=>{if(event.target.closest('.audio-tr
 audioEditor?.addEventListener('change',event=>{if(event.target.matches('input[type="file"]')||event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
 document.getElementById('addSubtitleBtn')?.addEventListener('click',()=>addSubtitleCue());document.getElementById('prefillSubtitlesBtn')?.addEventListener('click',prefillSubtitlesFromStoryboard);
 const subtitleEditor=document.querySelector('.subtitle-editor');
-subtitleEditor?.addEventListener('input',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
-subtitleEditor?.addEventListener('change',()=>renderSubtitleOverlay(audioTimelinePlayheadSeconds));
+subtitleEditor?.addEventListener('input',event=>{renderSubtitleOverlay(audioTimelinePlayheadSeconds);if(event.target.matches('[data-subtitle-start],[data-subtitle-end]'))renderSubtitleTimeline();});
+subtitleEditor?.addEventListener('change',event=>{renderSubtitleOverlay(audioTimelinePlayheadSeconds);if(event.target.matches('[data-subtitle-start],[data-subtitle-end]'))renderSubtitleTimeline();});
+bindSubtitleTimeline();
 
 function readAudioProcessing(read,label){
  const values={
@@ -1019,4 +1150,5 @@ if(storageEl)storageEl.textContent='Could not check MP4 storage readiness.';
 }
 refreshProviderStatus();
 renderAudioTimeline();
+renderSubtitleTimeline();
 document.getElementById('exportBtn').onclick=()=>{if(!currentData)return;const copy=JSON.parse(JSON.stringify(currentData)),idea=copy.ideas?.[selectedIdea];if(!idea)return;idea.scenes.forEach((s,i)=>document.querySelectorAll('.scene')[i]?.querySelectorAll('textarea').forEach(t=>s[t.dataset.k]=t.value));copy.selected_idea_storyboard={title:idea.title,scenes:idea.scenes};const a=document.createElement('a'),url=URL.createObjectURL(new Blob([JSON.stringify(copy,null,2)],{type:'application/json'}));a.href=url;a.download='reference2video-storyboard.json';a.click();URL.revokeObjectURL(url);};
