@@ -367,3 +367,46 @@ test("saves and restores storyboard, clip references, audio settings and caption
   await expect(page.locator("#projectManagerStatus")).toContainText("Re-select audio files");
   await expect(page.locator("#projectManagerStatus")).toContainText("Load history");
 });
+
+
+test("debounced autosave preserves active project edits after reload", async ({ page }) => {
+  await openStudio(page);
+  await page.evaluate(() => {
+    currentData = {
+      analysis: { summary: "Autosave integration test" },
+      ideas: [{
+        title: "Autosave browser project",
+        hook: "Keep edits safe",
+        concept: "Debounced local recovery",
+        why_it_works: "The active project should survive a reload after an edit.",
+        scenes: [{
+          scene: 1, time: "00:00–00:05", purpose: "Opening",
+          visual_prompt: "A quiet valley", video_prompt: "Original prompt",
+          camera_and_motion: "Slow push", on_screen_text: "KEEP WORKING",
+          voiceover: "The edit is saved.", sound_design: "Soft wind"
+        }]
+      }]
+    };
+    selectedIdea = 0;
+    render(currentData);
+  });
+
+  await page.locator("#saveProjectBtn").click();
+  await expect(page.locator("#projectManagerStatus")).toContainText("Saved on this browser");
+  await page.locator("#scenes textarea[data-k='video_prompt']").fill("Autosaved prompt after the first manual save");
+  await expect(page.locator("#projectManagerStatus")).toContainText("Unsaved changes");
+
+  await expect.poll(() => page.evaluate(() => {
+    const api = window.Reference2VideoProjectManager;
+    const saved = api.listProjects(localStorage)[0];
+    if (!saved) return "";
+    return api.loadProject(localStorage, saved.project_id).state.storyboard.ideas[0].scenes[0].video_prompt;
+  }), { timeout: 5000 }).toBe("Autosaved prompt after the first manual save");
+  await expect(page.locator("#projectManagerStatus")).toContainText("Auto-saved locally");
+
+  await page.reload();
+  await expect(page.locator("#savedProjects option")).toHaveCount(2);
+  await page.locator("#savedProjects").selectOption({ index: 1 });
+  await page.locator("#openProjectBtn").click();
+  await expect(page.locator("#scenes textarea[data-k='video_prompt']")).toHaveValue("Autosaved prompt after the first manual save");
+});
