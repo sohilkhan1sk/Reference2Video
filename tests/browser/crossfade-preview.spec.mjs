@@ -350,7 +350,8 @@ test("saves and restores storyboard, clip references, audio settings and caption
 
   await page.reload();
   await expect(page.locator("#savedProjects option")).toHaveCount(2);
-  await page.locator("#savedProjects").selectOption({ label: /Ice Age — saved edit/ });
+  const savedOption = page.locator("#savedProjects option").filter({ hasText: "Ice Age — saved edit" });
+  await page.locator("#savedProjects").selectOption(await savedOption.getAttribute("value"));
   await page.locator("#openProjectBtn").click();
 
   await expect(page.locator("#results")).not.toHaveClass(/hidden/);
