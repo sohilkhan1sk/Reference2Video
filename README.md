@@ -186,5 +186,8 @@ The Project Manager stores up to 20 projects in the current browser's local stor
 - Generated clips are referenced by generation-job ID. After reopening, enter the owner access token manually and click **Load history** to reconnect the clip metadata and available MP4s. Missing or expired server media cannot be reconstructed from project JSON.
 - The owner access token, AI_GATEWAY_API_KEY, GEMINI_API_KEY, and other secret/credential fields are excluded from the project schema and never saved or exported.
 - Local project storage is limited to 20 projects and 2 MB per project. The portable JSON format uses schema version 1; unsupported future schema versions are rejected instead of being silently misread.
+- **Debounced local auto-save:** after a project has been saved or imported, edits to scene prompts, project name, clip queue/order and trims/transitions, audio controls, SFX cues, subtitle text/style and caption-timeline edits are saved to the active browser project after 900 ms without further edits. A new analysis is not automatically added to the project list until you first save or import it.
+- Auto-save flushes when the tab is hidden or closed. If browser storage is full or unavailable, the editor shows an error and warns before leaving; switching projects or starting a new analysis is blocked until the current changes can be saved. The manual **Save project** and **Export project JSON** controls remain available.
+- Auto-save is browser-local only. It is not cloud sync and does not upload source media or call an AI provider.
 
-Saving, importing or exporting a project makes no Gemini, Wan, TTS, transcription or other paid provider request.
+Saving, importing, auto-saving or exporting a project makes no Gemini, Wan, TTS, transcription or other paid provider request.
