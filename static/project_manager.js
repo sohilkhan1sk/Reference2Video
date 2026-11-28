@@ -11,6 +11,10 @@
   const INDEX_KEY = "reference2video.projects.index.v1";
   const PROJECT_PREFIX = "reference2video.project.v1.";
   const SECRET_KEY = /(token|api[_-]?key|secret|password|authorization|credential)/i;
+  function utf8ByteLength(value) {
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(String(value)).length;
+    return unescape(encodeURIComponent(String(value))).length;
+  }
 
   function now() { return Date.now(); }
   function makeId() {
@@ -201,12 +205,12 @@
   function serializeProject(project) {
     const normalized = normalizeProject(project);
     const text = JSON.stringify(normalized, null, 2);
-    if (text.length > MAX_PROJECT_BYTES) throw new Error("Project JSON exceeds the 2 MB safety limit. Remove unused storyboard material and try again.");
+    if (utf8ByteLength(text) > MAX_PROJECT_BYTES) throw new Error("Project JSON exceeds the 2 MB safety limit. Remove unused storyboard material and try again.");
     return text;
   }
   function parseProjectFile(text, options) {
     const source = String(text == null ? "" : text);
-    if (!source || source.length > MAX_PROJECT_BYTES) {
+    if (!source || utf8ByteLength(source) > MAX_PROJECT_BYTES) {
       throw new Error("Project file is empty or exceeds the 2 MB safety limit.");
     }
     let parsed;
@@ -231,7 +235,7 @@
   function saveProject(storage, raw) {
     const project = normalizeProject(raw);
     const serialized = JSON.stringify(project);
-    if (serialized.length > MAX_PROJECT_BYTES) throw new Error("Project is larger than the 2 MB local-save limit. Export a smaller storyboard.");
+    if (utf8ByteLength(serialized) > MAX_PROJECT_BYTES) throw new Error("Project is larger than the 2 MB local-save limit. Export a smaller storyboard.");
     const index = readIndex(storage).filter(item => item.id !== project.project_id);
     index.unshift({ id: project.project_id, name: project.name, updated_at: project.updated_at });
     const kept = index.slice(0, MAX_PROJECTS);
