@@ -174,3 +174,17 @@ After the video provider returns an MP4, the worker runs `ffprobe` against the a
 - Add `FFPROBE_PATH` only when you manage the binary yourself. No API key or paid provider request is needed for probing.
 
 The metadata probe itself has not been exercised against a real provider-generated clip in this repository's automated tests; its parser and failure handling are unit-tested with mocked ffprobe responses. A live Render/MP4 probe should be verified after deployment.
+
+
+## Saved projects and portable project JSON
+
+The Project Manager stores up to 20 projects in the current browser's local storage. It saves the selected Gemini storyboard (including manual scene edits), selected concept, generated clip job IDs and queue order, trim/crossfade settings, audio gain/trim/fade settings, SFX cue timing, subtitle text/timing/style, and the selected export aspect ratio.
+
+- **Save project** stores the current editing state on this browser. It is not cloud sync; browser storage clearing, private browsing or switching devices can remove or hide local saves.
+- **Export project JSON** creates a portable .r2v.json backup (maximum 2 MB). **Import project JSON** opens it as a new working copy; save it locally if you want it in the browser's project list.
+- Project files contain media references, not media bytes. The original reference video and voiceover/music/SFX files must be selected again after reopening. The UI explicitly marks saved audio files that need re-selection and blocks assembly until those files are selected again.
+- Generated clips are referenced by generation-job ID. After reopening, enter the owner access token manually and click **Load history** to reconnect the clip metadata and available MP4s. Missing or expired server media cannot be reconstructed from project JSON.
+- The owner access token, AI_GATEWAY_API_KEY, GEMINI_API_KEY, and other secret/credential fields are excluded from the project schema and never saved or exported.
+- Local project storage is limited to 20 projects and 2 MB per project. The portable JSON format uses schema version 1; unsupported future schema versions are rejected instead of being silently misread.
+
+Saving, importing or exporting a project makes no Gemini, Wan, TTS, transcription or other paid provider request.
