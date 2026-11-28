@@ -312,7 +312,7 @@ test("saves and restores storyboard, clip references, audio settings and caption
       }]
     };
     selectedIdea = 0;
-    drawScenes();
+    render(currentData);
     assemblyEditsById["job-a"] = {
       trim_start_seconds: 0.4,
       trim_end_seconds: 2.8,
