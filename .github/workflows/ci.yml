@@ -31,6 +31,10 @@ jobs:
         run: node --check static/project_manager.js
       - name: Test project save, restore and portable JSON
         run: node --test tests/test_project_manager.js
+      - name: Check project autosave module syntax
+        run: node --check static/project_autosave.js
+      - name: Test debounced project autosave and failure recovery
+        run: node --test tests/test_project_autosave.js
       - name: Check audio timeline module syntax
         run: node --check static/audio_timeline.js
       - name: Test audio timeline calculations
