@@ -1516,7 +1516,8 @@ document.getElementById('openProjectBtn')?.addEventListener('click',()=>{
   if(!id)throw new Error('Choose a saved project first.');
   if(!flushProjectAutosaveBeforeSwitch())return;
   const project=projectManagerApi().loadProject(window.localStorage,id);
-  restoreProjectState(project);
+  if(projectAutosaveController)projectAutosaveController.withSuspended(()=>restoreProjectState(project));
+  else restoreProjectState(project);
  }catch(error){projectManagerStatus(error.message,true);}
 });
 document.getElementById('deleteProjectBtn')?.addEventListener('click',()=>{
@@ -1537,8 +1538,12 @@ document.getElementById('importProjectFile')?.addEventListener('change',async ev
   if(!flushProjectAutosaveBeforeSwitch())return;
   if(file.size>projectManagerApi().MAX_PROJECT_BYTES)throw new Error('Project JSON exceeds the 2 MB import limit.');
   const project=projectManagerApi().parseProjectFile(await file.text(),{newId:true});
-  const restoreNotes=restoreProjectState(project);
-  projectManagerStatus('Imported "'+project.name+'" as a new working copy. Save it on this browser or export it as a backup when ready. '+(restoreNotes.join(' ')||'All saved editing metadata is ready.'));
+  const restoreNotes=projectAutosaveController
+   ?projectAutosaveController.withSuspended(()=>restoreProjectState(project))
+   :restoreProjectState(project);
+  saveProjectSnapshot();
+  projectAutosaveController?.markClean();
+  projectManagerStatus('Imported "'+project.name+'" and saved it on this browser as a new working copy. '+(restoreNotes.join(' ')||'All saved editing metadata is ready.'));
  }catch(error){projectManagerStatus(error.message,true);}
  finally{event.target.value='';}
 });
