@@ -1,11 +1,11 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
 let currentData=null,selectedIdea=0,assemblyQueue=[],assemblyEditsById={},recentJobsById={},assemblyVideoPreviewState=null,assemblyVideoSyncRaf=0;
-let subtitleCueSequence=0,activeProjectId=null,activeProjectCreatedAt=null,currentReferenceFileName='';
+let subtitleCueSequence=0,activeProjectId=null,activeProjectCreatedAt=null,currentReferenceFileName='',projectAutosaveController=null;
 const selectedSubtitleCueIds=new Set();
 fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){currentReferenceFileName=f.name;document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
-form.addEventListener('submit',e=>{e.preventDefault();errorBox.classList.add('hidden');results.classList.add('hidden');if(!fileInput.files[0])return;btn.disabled=true;const startedAt=Date.now();setAnalyzeProgress('Preparing your video…');progress.classList.remove('hidden');const timer=setInterval(()=>{const time=document.getElementById('elapsedTime');if(time)time.textContent=formatElapsed(Date.now()-startedAt);},1000);const xhr=new XMLHttpRequest();xhr.open('POST','/api/analyze');xhr.upload.addEventListener('progress',event=>{if(event.lengthComputable){const label=document.getElementById('progressMessage');if(label)label.textContent='Uploading video · '+Math.round(event.loaded/event.total*100)+'%';}});xhr.upload.addEventListener('load',()=>{const label=document.getElementById('progressMessage');if(label)label.textContent='Video uploaded · AI is analyzing the reference and creating concepts…';});xhr.onload=()=>{try{let data;try{data=JSON.parse(xhr.responseText);}catch(_){throw Error('The server returned an unexpected page instead of JSON (HTTP '+xhr.status+'). Please refresh and try again.');}if(xhr.status<200||xhr.status>=300)throw Error(data.error||'Upload failed (HTTP '+xhr.status+').');if(!data.job_id)throw Error('The server did not return an analysis job ID.');pollAnalysis(data.job_id,startedAt,timer);}catch(err){clearInterval(timer);errorBox.textContent=err.message;errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;}};xhr.onerror=()=>{clearInterval(timer);errorBox.textContent='Network error while uploading or analyzing. Check your connection and try again.';errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;};xhr.send(new FormData(form));});
+form.addEventListener('submit',e=>{e.preventDefault();if(projectAutosaveController?.isDirty()&&!projectAutosaveController.flush()){errorBox.textContent='Your current project could not be saved locally. Export a project JSON backup or fix browser storage before starting a new analysis.';errorBox.classList.remove('hidden');return;}errorBox.classList.add('hidden');results.classList.add('hidden');if(!fileInput.files[0])return;btn.disabled=true;const startedAt=Date.now();setAnalyzeProgress('Preparing your video…');progress.classList.remove('hidden');const timer=setInterval(()=>{const time=document.getElementById('elapsedTime');if(time)time.textContent=formatElapsed(Date.now()-startedAt);},1000);const xhr=new XMLHttpRequest();xhr.open('POST','/api/analyze');xhr.upload.addEventListener('progress',event=>{if(event.lengthComputable){const label=document.getElementById('progressMessage');if(label)label.textContent='Uploading video · '+Math.round(event.loaded/event.total*100)+'%';}});xhr.upload.addEventListener('load',()=>{const label=document.getElementById('progressMessage');if(label)label.textContent='Video uploaded · AI is analyzing the reference and creating concepts…';});xhr.onload=()=>{try{let data;try{data=JSON.parse(xhr.responseText);}catch(_){throw Error('The server returned an unexpected page instead of JSON (HTTP '+xhr.status+'). Please refresh and try again.');}if(xhr.status<200||xhr.status>=300)throw Error(data.error||'Upload failed (HTTP '+xhr.status+').');if(!data.job_id)throw Error('The server did not return an analysis job ID.');pollAnalysis(data.job_id,startedAt,timer);}catch(err){clearInterval(timer);errorBox.textContent=err.message;errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;}};xhr.onerror=()=>{clearInterval(timer);errorBox.textContent='Network error while uploading or analyzing. Check your connection and try again.';errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;};xhr.send(new FormData(form));});
 async function readJsonResponse(response,context){const raw=await response.text();try{return JSON.parse(raw);}catch(_){const preview=raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,180);throw Error(context+' received a non-JSON response (HTTP '+response.status+'). '+(preview||'The server returned an empty response.')+' If this is a Render error page, the service may have restarted or timed out.');}}
 async function pollAnalysis(jobId,startedAt,timer){try{const response=await fetch('/api/analyze/'+encodeURIComponent(jobId));const data=await readJsonResponse(response,'Analysis status check');if(!response.ok)throw Error(data.error||'Could not check analysis status (HTTP '+response.status+').');if(data.status==='COMPLETED'){clearInterval(timer);currentData=data.result;selectedIdea=0;activeProjectId=null;activeProjectCreatedAt=null;render(currentData);progress.classList.add('hidden');btn.disabled=false;return;}if(data.status==='FAILED'){clearInterval(timer);throw Error(data.error||'Analysis failed.');}const label=document.getElementById('progressMessage');if(label)label.textContent=data.message||'AI is analyzing your reference video…';setTimeout(()=>pollAnalysis(jobId,startedAt,timer),3000);}catch(err){clearInterval(timer);errorBox.textContent=err.message;errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;}}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -1321,15 +1321,11 @@ function makeCurrentProject(){
 }
 function saveCurrentProject(){
  try{
-  const project=makeCurrentProject();
-  const saved=projectManagerApi().saveProject(window.localStorage,project);
-  activeProjectId=saved.project_id;
-  activeProjectCreatedAt=saved.created_at;
-  const name=document.getElementById('projectName');
-  if(name)name.value=saved.name;
-  refreshSavedProjectOptions();
-  projectManagerStatus('Saved on this browser. Export a project JSON backup to move it to another device. Audio/reference files are not embedded; generated clips are reconnected from job history. Owner tokens and API keys are never saved.');
- }catch(error){projectManagerStatus(error.message,true);}
+  const saved=saveProjectSnapshot();
+  projectAutosaveController?.markClean();
+  projectManagerStatus('Saved on this browser. Auto-save is now active for subsequent edits. Export a project JSON backup to move it to another device. Media bytes and owner/provider secrets are never saved.');
+  return true;
+ }catch(error){projectManagerStatus(error.message,true);return false;}
 }
 function downloadProjectJson(){
  try{
@@ -1448,12 +1444,75 @@ function missingRestoredAudioAssets(){
  });
  return missing;
 }
+
+function saveProjectSnapshot(){
+ const project=makeCurrentProject();
+ const saved=projectManagerApi().saveProject(window.localStorage,project);
+ activeProjectId=saved.project_id;
+ activeProjectCreatedAt=saved.created_at;
+ const name=document.getElementById('projectName');
+ if(name)name.value=saved.name;
+ refreshSavedProjectOptions();
+ return saved;
+}
+if(window.Reference2VideoProjectAutosave?.createProjectAutosave){
+ projectAutosaveController=window.Reference2VideoProjectAutosave.createProjectAutosave({
+  delayMs:900,
+  isEnabled:()=>Boolean(activeProjectId&&currentData),
+  save:()=>saveProjectSnapshot(),
+  onState:state=>{
+   if(state.status==='pending')projectManagerStatus('Unsaved changes · auto-saving locally…');
+   else if(state.status==='saving')projectManagerStatus('Saving project changes to this browser…');
+   else if(state.status==='saved')projectManagerStatus('Auto-saved locally at '+new Date().toLocaleTimeString()+'. Export a project JSON backup to move it to another device.');
+   else if(state.status==='error')projectManagerStatus('Auto-save failed: '+(state.error?.message||'browser storage is unavailable')+'. Click Save project or export a JSON backup.',true);
+  }
+ });
+}
+function flushProjectAutosaveBeforeSwitch(){
+ if(!projectAutosaveController?.isDirty())return true;
+ if(projectAutosaveController.flush())return true;
+ projectManagerStatus('The current project could not be auto-saved. Fix browser storage or export a JSON backup before switching projects.',true);
+ return false;
+}
+const projectAutosaveSelector='#projectName, #scenes textarea[data-k], #assemblyAspect, #assemblyQueue input, #assemblyQueue select, .audio-controls input, .audio-controls select, #sfxCueList input, .subtitle-editor input, .subtitle-editor textarea, .subtitle-editor select';
+function handleProjectEditorInput(event){
+ if(event.target?.matches?.(projectAutosaveSelector))projectAutosaveController?.schedule(event.type);
+}
+document.addEventListener('input',handleProjectEditorInput,true);
+document.addEventListener('change',handleProjectEditorInput,true);
+document.addEventListener('pointerup',event=>{
+ if(event.target?.closest?.('#subtitleTimelineLane'))projectAutosaveController?.schedule('subtitle timeline edit');
+},true);
+document.addEventListener('keyup',event=>{
+ if(event.target?.closest?.('#subtitleTimelineLane'))projectAutosaveController?.schedule('subtitle timeline keyboard edit');
+},true);
+if(typeof MutationObserver!=='undefined'){
+ const projectEditorObserver=new MutationObserver(records=>{
+  if(records.some(record=>record.type==='childList'))projectAutosaveController?.schedule('editor structure changed');
+ });
+ ['scenes','assemblyQueue','sfxCueList','subtitleCueList'].forEach(id=>{
+  const element=document.getElementById(id);
+  if(element)projectEditorObserver.observe(element,{childList:true});
+ });
+}
+window.addEventListener('pagehide',()=>projectAutosaveController?.flush());
+window.addEventListener('beforeunload',event=>{
+ if(projectAutosaveController?.isDirty()&&!projectAutosaveController.flush()){
+  event.preventDefault();
+  event.returnValue='';
+ }
+});
+document.addEventListener('visibilitychange',()=>{
+ if(document.visibilityState==='hidden')projectAutosaveController?.flush();
+});
 document.getElementById('saveProjectBtn')?.addEventListener('click',saveCurrentProject);
 document.getElementById('exportProjectBtn')?.addEventListener('click',downloadProjectJson);
 document.getElementById('savedProjects')?.addEventListener('change',updateProjectControls);
 document.getElementById('openProjectBtn')?.addEventListener('click',()=>{
  try{
   const id=document.getElementById('savedProjects')?.value;
+  if(!id)throw new Error('Choose a saved project first.');
+  if(!flushProjectAutosaveBeforeSwitch())return;
   const project=projectManagerApi().loadProject(window.localStorage,id);
   restoreProjectState(project);
  }catch(error){projectManagerStatus(error.message,true);}
@@ -1463,8 +1522,8 @@ document.getElementById('deleteProjectBtn')?.addEventListener('click',()=>{
   const select=document.getElementById('savedProjects'),id=select?.value;
   if(!id)return;
   if(!window.confirm('Delete this saved project from this browser? This does not delete generated clips or media files.'))return;
+  if(activeProjectId===id){projectAutosaveController?.cancel();activeProjectId=null;activeProjectCreatedAt=null;}
   projectManagerApi().deleteProject(window.localStorage,id);
-  if(activeProjectId===id){activeProjectId=null;activeProjectCreatedAt=null;}
   refreshSavedProjectOptions();
   projectManagerStatus('Saved project deleted from this browser. Generated clips and source media were not deleted.');
  }catch(error){projectManagerStatus(error.message,true);}
@@ -1473,6 +1532,7 @@ document.getElementById('importProjectFile')?.addEventListener('change',async ev
  const file=event.target.files?.[0];
  if(!file)return;
  try{
+  if(!flushProjectAutosaveBeforeSwitch())return;
   if(file.size>projectManagerApi().MAX_PROJECT_BYTES)throw new Error('Project JSON exceeds the 2 MB import limit.');
   const project=projectManagerApi().parseProjectFile(await file.text(),{newId:true});
   const restoreNotes=restoreProjectState(project);
