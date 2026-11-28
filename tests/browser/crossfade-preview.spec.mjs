@@ -291,3 +291,79 @@ test("subtitle timeline drag moves a cue and its end handle resizes it", async (
   const resizedEnd = Number(await cue.locator("[data-subtitle-end]").inputValue());
   expect(resizedEnd).toBeGreaterThan(endAfterMove + 0.2);
 });
+
+
+test("saves and restores storyboard, clip references, audio settings and captions without storing secrets", async ({ page }) => {
+  await openStudio(page);
+  await page.evaluate(() => {
+    currentData = {
+      analysis: { summary: "Browser project persistence test" },
+      ideas: [{
+        title: "Saved browser project",
+        hook: "A restored edit",
+        concept: "A compact persistence test",
+        why_it_works: "It verifies the editor state survives a reload.",
+        scenes: [{
+          scene: 1, time: "00:00–00:05", purpose: "Opening",
+          visual_prompt: "A snowy valley", video_prompt: "Original prompt",
+          camera_and_motion: "Slow push", on_screen_text: "THE BEGINNING",
+          voiceover: "The story begins.", sound_design: "Low wind"
+        }]
+      }]
+    };
+    selectedIdea = 0;
+    render(currentData);
+    assemblyEditsById["job-a"] = {
+      trim_start_seconds: 0.4,
+      trim_end_seconds: 2.8,
+      transition_after: "crossfade",
+      transition_duration_seconds: 0.75
+    };
+    document.getElementById("voiceoverFile").dataset.savedFileName = "narration.wav";
+  });
+
+  await page.locator("#scenes textarea[data-k='video_prompt']").fill("Manually revised prompt that must survive reload");
+  await page.locator("#projectName").fill("Ice Age — saved edit");
+  await page.locator("#assemblyAspect").selectOption("9:16");
+  await page.locator("#voiceoverGain").fill("135");
+  await page.locator("#subtitlesEnabled").check();
+  await page.locator("#addSubtitleBtn").click();
+  const caption = page.locator(".subtitle-cue").first();
+  await caption.locator("[data-subtitle-start]").fill("0.5");
+  await caption.locator("[data-subtitle-end]").fill("2.5");
+  await caption.locator("[data-subtitle-text]").fill("The story begins.");
+  await page.locator("#saveProjectBtn").click();
+  await expect(page.locator("#projectManagerStatus")).toContainText("Saved on this browser");
+
+  const stored = await page.evaluate(() => {
+    const index = localStorage.getItem("reference2video.projects.index.v1");
+    const parsed = JSON.parse(index || "[]");
+    const raw = parsed.length
+      ? localStorage.getItem("reference2video.project.v1." + parsed[0].id)
+      : "";
+    return { index, raw };
+  });
+  expect(stored.raw).toContain("Manually revised prompt that must survive reload");
+  expect(stored.raw).toContain("narration.wav");
+  expect(stored.raw).not.toContain("browser-test-owner-token");
+  expect(stored.raw.toLowerCase()).not.toContain("owner_token");
+
+  await page.reload();
+  await expect(page.locator("#savedProjects option")).toHaveCount(2);
+  const savedOption = page.locator("#savedProjects option").filter({ hasText: "Ice Age — saved edit" });
+  await page.locator("#savedProjects").selectOption(await savedOption.getAttribute("value"));
+  await page.locator("#openProjectBtn").click();
+
+  await expect(page.locator("#results")).not.toHaveClass(/hidden/);
+  await expect(page.locator("#storyTitle")).toHaveText("Saved browser project");
+  await expect(page.locator("#scenes textarea[data-k='video_prompt']")).toHaveValue("Manually revised prompt that must survive reload");
+  await expect(page.locator("#assemblyAspect")).toHaveValue("9:16");
+  await expect(page.locator("#voiceoverGain")).toHaveValue("135");
+  await expect(page.locator("#voiceoverFileName")).toContainText("Re-select file after opening: narration.wav");
+  await expect(page.locator("#subtitlesEnabled")).toBeChecked();
+  await expect(page.locator(".subtitle-cue")).toHaveCount(1);
+  await expect(page.locator(".subtitle-cue [data-subtitle-text]")).toHaveValue("The story begins.");
+  await expect(page.locator("#assembleBtn")).toBeDisabled();
+  await expect(page.locator("#projectManagerStatus")).toContainText("Re-select audio files");
+  await expect(page.locator("#projectManagerStatus")).toContainText("Load history");
+});
