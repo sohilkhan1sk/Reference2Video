@@ -1,16 +1,16 @@
 const form=document.getElementById('analyzeForm'),fileInput=document.getElementById('video'),progress=document.getElementById('progress'),errorBox=document.getElementById('error'),results=document.getElementById('results'),btn=document.getElementById('analyzeBtn');
 let currentData=null,selectedIdea=0,assemblyQueue=[],assemblyEditsById={},recentJobsById={},assemblyVideoPreviewState=null,assemblyVideoSyncRaf=0;
-let subtitleCueSequence=0;
+let subtitleCueSequence=0,activeProjectId=null,activeProjectCreatedAt=null,currentReferenceFileName='';
 const selectedSubtitleCueIds=new Set();
-fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
+fileInput.addEventListener('change',()=>{const f=fileInput.files[0];if(f){currentReferenceFileName=f.name;document.getElementById('fileTitle').textContent=f.name;document.getElementById('fileMeta').textContent=(f.size/1048576).toFixed(1)+' MB · Ready to analyze';}});
 function formatElapsed(ms){const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,'0'),s=String(total%60).padStart(2,'0');return m+':'+s;}
 function setAnalyzeProgress(message){progress.innerHTML='<div class="progress-top"><span id="progressMessage"></span><strong id="elapsedTime">00:00</strong></div><div class="progress-track"><div class="progress-bar"></div></div><small class="progress-hint">Elapsed time · Upload and AI analysis can take a few minutes. Keep this tab open.</small>';document.getElementById('progressMessage').textContent=message;}
 form.addEventListener('submit',e=>{e.preventDefault();errorBox.classList.add('hidden');results.classList.add('hidden');if(!fileInput.files[0])return;btn.disabled=true;const startedAt=Date.now();setAnalyzeProgress('Preparing your video…');progress.classList.remove('hidden');const timer=setInterval(()=>{const time=document.getElementById('elapsedTime');if(time)time.textContent=formatElapsed(Date.now()-startedAt);},1000);const xhr=new XMLHttpRequest();xhr.open('POST','/api/analyze');xhr.upload.addEventListener('progress',event=>{if(event.lengthComputable){const label=document.getElementById('progressMessage');if(label)label.textContent='Uploading video · '+Math.round(event.loaded/event.total*100)+'%';}});xhr.upload.addEventListener('load',()=>{const label=document.getElementById('progressMessage');if(label)label.textContent='Video uploaded · AI is analyzing the reference and creating concepts…';});xhr.onload=()=>{try{let data;try{data=JSON.parse(xhr.responseText);}catch(_){throw Error('The server returned an unexpected page instead of JSON (HTTP '+xhr.status+'). Please refresh and try again.');}if(xhr.status<200||xhr.status>=300)throw Error(data.error||'Upload failed (HTTP '+xhr.status+').');if(!data.job_id)throw Error('The server did not return an analysis job ID.');pollAnalysis(data.job_id,startedAt,timer);}catch(err){clearInterval(timer);errorBox.textContent=err.message;errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;}};xhr.onerror=()=>{clearInterval(timer);errorBox.textContent='Network error while uploading or analyzing. Check your connection and try again.';errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;};xhr.send(new FormData(form));});
 async function readJsonResponse(response,context){const raw=await response.text();try{return JSON.parse(raw);}catch(_){const preview=raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,180);throw Error(context+' received a non-JSON response (HTTP '+response.status+'). '+(preview||'The server returned an empty response.')+' If this is a Render error page, the service may have restarted or timed out.');}}
-async function pollAnalysis(jobId,startedAt,timer){try{const response=await fetch('/api/analyze/'+encodeURIComponent(jobId));const data=await readJsonResponse(response,'Analysis status check');if(!response.ok)throw Error(data.error||'Could not check analysis status (HTTP '+response.status+').');if(data.status==='COMPLETED'){clearInterval(timer);currentData=data.result;selectedIdea=0;render(currentData);progress.classList.add('hidden');btn.disabled=false;return;}if(data.status==='FAILED'){clearInterval(timer);throw Error(data.error||'Analysis failed.');}const label=document.getElementById('progressMessage');if(label)label.textContent=data.message||'AI is analyzing your reference video…';setTimeout(()=>pollAnalysis(jobId,startedAt,timer),3000);}catch(err){clearInterval(timer);errorBox.textContent=err.message;errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;}}
+async function pollAnalysis(jobId,startedAt,timer){try{const response=await fetch('/api/analyze/'+encodeURIComponent(jobId));const data=await readJsonResponse(response,'Analysis status check');if(!response.ok)throw Error(data.error||'Could not check analysis status (HTTP '+response.status+').');if(data.status==='COMPLETED'){clearInterval(timer);currentData=data.result;selectedIdea=0;activeProjectId=null;activeProjectCreatedAt=null;render(currentData);progress.classList.add('hidden');btn.disabled=false;return;}if(data.status==='FAILED'){clearInterval(timer);throw Error(data.error||'Analysis failed.');}const label=document.getElementById('progressMessage');if(label)label.textContent=data.message||'AI is analyzing your reference video…';setTimeout(()=>pollAnalysis(jobId,startedAt,timer),3000);}catch(err){clearInterval(timer);errorBox.textContent=err.message;errorBox.classList.remove('hidden');progress.classList.add('hidden');btn.disabled=false;}}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 const labels={summary:'Overview',visual_style:'Visual style',editing_rhythm:'Editing rhythm',camera_language:'Camera language',color_and_lighting:'Color & lighting',text_and_graphics:'Text & graphics',audio_observations:'Audio observations',scene_structure:'Scene structure'};
-function render(d){results.classList.remove('hidden');const a=d.analysis||{};document.getElementById('analysisGrid').innerHTML=Object.entries(labels).map(([k,v])=>'<article class="card"><h3>'+v+'</h3><p>'+esc(a[k]||'Not available')+'</p></article>').join('');document.getElementById('ideas').innerHTML=(d.ideas||[]).map((x,i)=>'<article class="card idea '+(i===0?'selected':'')+'" data-i="'+i+'"><small>CONCEPT 0'+(i+1)+'</small><h3>'+esc(x.title)+'</h3><p><b>'+esc(x.hook)+'</b></p><p>'+esc(x.concept)+'</p><p>Why it works: '+esc(x.why_it_works)+'</p></article>').join('');document.querySelectorAll('.idea').forEach(el=>el.onclick=()=>{selectedIdea=+el.dataset.i;document.querySelectorAll('.idea').forEach(x=>x.classList.toggle('selected',x===el));drawScenes();});drawScenes();results.scrollIntoView({behavior:'smooth'});}
+function render(d){results.classList.remove('hidden');const a=d.analysis||{};document.getElementById('analysisGrid').innerHTML=Object.entries(labels).map(([k,v])=>'<article class="card"><h3>'+v+'</h3><p>'+esc(a[k]||'Not available')+'</p></article>').join('');document.getElementById('ideas').innerHTML=(d.ideas||[]).map((x,i)=>'<article class="card idea '+(i===0?'selected':'')+'" data-i="'+i+'"><small>CONCEPT 0'+(i+1)+'</small><h3>'+esc(x.title)+'</h3><p><b>'+esc(x.hook)+'</b></p><p>'+esc(x.concept)+'</p><p>Why it works: '+esc(x.why_it_works)+'</p></article>').join('');document.querySelectorAll('.idea').forEach(el=>el.onclick=()=>{selectedIdea=+el.dataset.i;document.querySelectorAll('.idea').forEach(x=>x.classList.toggle('selected',x===el));drawScenes();if(!activeProjectId){const name=document.getElementById('projectName');if(name)name.value=d.ideas?.[selectedIdea]?.title||'Untitled project';}updateProjectControls();});drawScenes();if(!activeProjectId){const name=document.getElementById('projectName');if(name)name.value=d.ideas?.[selectedIdea]?.title||'Untitled project';}updateProjectControls();results.scrollIntoView({behavior:'smooth'});}
 function estimateVideoCost(duration,resolution){const rates={'854x480':0.05,'1280x720':0.10,'1920x1080':0.20};return rates[resolution]*duration;}
 function formatUsd(value){return '$'+Number(value||0).toFixed(2);}
 function updateSceneCost(card){const duration=Number(card.querySelector('.clip-duration').value),resolution=card.querySelector('.clip-resolution').value,cost=estimateVideoCost(duration,resolution),rate=estimateVideoCost(1,resolution);const el=card.querySelector('.cost-estimate');if(el)el.textContent='Estimated base cost: '+formatUsd(cost)+' ('+duration+' sec × '+formatUsd(rate)+'/sec). Final provider billing may vary.';}
@@ -107,7 +107,7 @@ box.querySelectorAll('[data-scene-edit]').forEach(input=>{
  if(input.tagName==='SELECT')input.addEventListener('change',update);
  else input.addEventListener('input',update);
 });
-if(button)button.disabled=false;
+if(button)button.disabled=!assemblyQueue.every(id=>recentJobsById[id]?.artifact_available);
 renderAssemblyVideoPreview();
 renderAudioTimeline();
 }
@@ -372,13 +372,13 @@ function addSubtitleCue(draft){
   list.querySelector('.subtitle-empty')?.remove();
   const row=document.createElement('div');
   row.className='subtitle-cue';
-  row.dataset.subtitleId='subtitle-'+(++subtitleCueSequence);
+  subtitleCueSequence++;row.dataset.subtitleId=draft&&draft.id?String(draft.id):'subtitle-'+subtitleCueSequence;
   row.innerHTML='<div class="subtitle-cue-fields"><label>START (SEC)<input type="number" data-subtitle-start min="0" max="3600" step="0.1"></label><label>END (SEC)<input type="number" data-subtitle-end min="0" max="3600" step="0.1"></label><label class="subtitle-text-label"><small class="subtitle-cue-source"></small>CAPTION TEXT<textarea data-subtitle-text maxlength="220" rows="2" placeholder="Type the caption shown on screen"></textarea></label></div><button type="button" class="secondary subtitle-remove">Remove</button>';
   row.querySelector('[data-subtitle-start]').value=String(startSeconds);
   row.querySelector('[data-subtitle-end]').value=String(endSeconds);
   row.querySelector('[data-subtitle-text]').value=isDraft?String(draft.text||''):'';
   const sourceLabel=row.querySelector('.subtitle-cue-source');
-  sourceLabel.textContent=isDraft
+  sourceLabel.textContent=draft&&draft.source_label?String(draft.source_label):isDraft
    ?(draft.source==='SPLIT CAPTION'?'SPLIT CAPTION':('SCENE '+String(draft.scene_number||'').padStart(2,'0')+' · '+String(draft.source||'STORYBOARD DRAFT').toUpperCase()))
    :'MANUAL CUE';
   row.querySelector('.subtitle-remove').addEventListener('click',()=>{
@@ -942,29 +942,46 @@ async function renderAudioTimeline(){
  renderSubtitleTimeline();
 }
 
-function addSfxCue(){
+function addSfxCue(savedCue,suppressRender){
  const list=document.getElementById('sfxCueList');
- if(!list)return;
+ if(!list)return null;
  if(list.querySelectorAll('.sfx-cue').length>=6){
   const status=document.getElementById('assemblyStatus');
   if(status)status.textContent='A maximum of six timed SFX cues can be added to one export.';
-  return;
+  return null;
  }
  const usedIds=new Set(Array.from(list.querySelectorAll('.sfx-cue')).map(item=>Number(item.dataset.sfxId)));
- const id=[0,1,2,3,4,5].find(value=>!usedIds.has(value));
+ const requestedId=Number(savedCue?.id);
+ const id=Number.isInteger(requestedId)&&requestedId>=0&&requestedId<=5&&!usedIds.has(requestedId)
+  ?requestedId:[0,1,2,3,4,5].find(value=>!usedIds.has(value));
+ if(id===undefined)return null;
  const row=document.createElement('div');
  row.className='sfx-cue';
  row.dataset.sfxId=String(id);
  row.innerHTML='<label>SFX FILE<input type="file" data-sfx-file accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,.aiff,audio/*"><small data-sfx-name>No file selected · max 10 MB</small></label><label>START TIME (SECONDS)<input type="number" data-sfx-start min="0" max="900" step="0.1" value="0"></label><label class="sfx-gain">LEVEL <input type="range" data-sfx-gain min="0" max="200" step="5" value="100"><span data-sfx-gain-value>100%</span></label><details class="sfx-processing"><summary>Trim & fades</summary><div class="processing-grid"><label>TRIM START<input type="number" data-sfx-trim-start min="0" max="3600" step="0.1" value="0"></label><label>TRIM END · 0 = full<input type="number" data-sfx-trim-end min="0" max="3600" step="0.1" value="0"></label><label>FADE IN<input type="number" data-sfx-fade-in min="0" max="10" step="0.1" value="0"></label><label>FADE OUT START<input type="number" data-sfx-fade-out-start min="0" max="3600" step="0.1" value="0"></label><label>FADE OUT LENGTH<input type="number" data-sfx-fade-out min="0" max="10" step="0.1" value="0"></label></div></details><button type="button" class="secondary sfx-remove">Remove</button>';
  const file=row.querySelector('[data-sfx-file]');
- file.addEventListener('change',()=>{row.querySelector('[data-sfx-name]').textContent=file.files?.[0]?.name||'No file selected · max 10 MB';});
+ const savedName=String(savedCue?.file_name||'');
+ file.dataset.savedFileName=savedName;
+ row.querySelector('[data-sfx-name]').textContent=savedName?'Re-select after opening: '+savedName:'No file selected · max 10 MB';
+ file.addEventListener('change',()=>{file.dataset.savedFileName=file.files?.[0]?.name||'';row.querySelector('[data-sfx-name]').textContent=file.files?.[0]?.name||'No file selected · max 10 MB';});
+ const set=(selector,value)=>{const input=row.querySelector(selector);if(input&&value!==undefined&&value!==null)input.value=String(value);};
+ set('[data-sfx-start]',savedCue?.start_seconds??0);
+ set('[data-sfx-gain]',Math.round(Number(savedCue?.gain??1)*100));
+ const processing=savedCue?.processing||{};
+ set('[data-sfx-trim-start]',processing.trim_start_seconds??0);
+ set('[data-sfx-trim-end]',processing.trim_end_seconds??0);
+ set('[data-sfx-fade-in]',processing.fade_in_seconds??0);
+ set('[data-sfx-fade-out-start]',processing.fade_out_start_seconds??0);
+ set('[data-sfx-fade-out]',processing.fade_out_seconds??0);
  const gain=row.querySelector('[data-sfx-gain]');
  gain.addEventListener('input',()=>{row.querySelector('[data-sfx-gain-value]').textContent=gain.value+'%';});
+ row.querySelector('[data-sfx-gain-value]').textContent=gain.value+'%';
  row.querySelector('.sfx-remove').addEventListener('click',()=>{row.remove();renderAudioTimeline();});
  list.appendChild(row);
- renderAudioTimeline();
+ if(!suppressRender)renderAudioTimeline();
+ return row;
 }
-document.getElementById('addSfxBtn')?.addEventListener('click',addSfxCue);
+document.getElementById('addSfxBtn')?.addEventListener('click',()=>addSfxCue());
 const audioEditor=document.querySelector('.assembly-panel');
 audioEditor?.addEventListener('input',event=>{if(event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
 audioEditor?.addEventListener('change',event=>{if(event.target.matches('input[type="file"]')||event.target.closest('.audio-track-control,.sfx-cue'))renderAudioTimeline();});
@@ -1003,6 +1020,8 @@ async function createAssembly(){
  const aspect=document.getElementById('assemblyAspect')?.value||'16:9';
  const voiceover=document.getElementById('voiceoverFile')?.files?.[0]||null;
  const music=document.getElementById('musicFile')?.files?.[0]||null;
+ const missingSavedAssets=missingRestoredAudioAssets();
+ if(missingSavedAssets.length){if(status)status.textContent='Re-select these saved audio files before assembly: '+missingSavedAssets.join(', ')+'. Project files store names and settings, not private media bytes.';return;}
  const soundEffects=[];
  for(const row of document.querySelectorAll('.sfx-cue')){
   const file=row.querySelector('[data-sfx-file]')?.files?.[0]||null;
@@ -1104,7 +1123,7 @@ if(input&&value){const update=()=>value.textContent=input.value+'%';input.addEve
 });
 [['voiceoverFile','voiceoverFileName'],['musicFile','musicFileName']].forEach(([inputId,labelId])=>{
 const input=document.getElementById(inputId),label=document.getElementById(labelId);
-if(input&&label)input.addEventListener('change',()=>{label.textContent=input.files?.[0]?.name||'No file selected';});
+if(input&&label)input.addEventListener('change',()=>{input.dataset.savedFileName=input.files?.[0]?.name||'';label.textContent=input.files?.[0]?.name||'No file selected';});
 });
 async function loadRecentJobs(){
 const button=document.getElementById('loadJobsBtn'),status=document.getElementById('historyStatus'),token=document.getElementById('videoAccessToken')?.value.trim()||'';
@@ -1154,3 +1173,311 @@ refreshProviderStatus();
 renderAudioTimeline();
 renderSubtitleTimeline();
 document.getElementById('exportBtn').onclick=()=>{if(!currentData)return;const copy=JSON.parse(JSON.stringify(currentData)),idea=copy.ideas?.[selectedIdea];if(!idea)return;idea.scenes.forEach((s,i)=>document.querySelectorAll('.scene')[i]?.querySelectorAll('textarea').forEach(t=>s[t.dataset.k]=t.value));copy.selected_idea_storyboard={title:idea.title,scenes:idea.scenes};const a=document.createElement('a'),url=URL.createObjectURL(new Blob([JSON.stringify(copy,null,2)],{type:'application/json'}));a.href=url;a.download='reference2video-storyboard.json';a.click();URL.revokeObjectURL(url);};
+
+// Browser-local project manager. Media bytes and owner/provider secrets are never serialized.
+function projectManagerStatus(message,isError){
+ const el=document.getElementById('projectManagerStatus');
+ if(!el)return;
+ el.textContent=message;
+ el.classList.toggle('is-error',Boolean(isError));
+}
+function projectManagerApi(){
+ const api=window.Reference2VideoProjectManager;
+ if(!api)throw new Error('Project manager module did not load. Refresh the page and try again.');
+ return api;
+}
+function refreshSavedProjectOptions(){
+ const select=document.getElementById('savedProjects');
+ if(!select)return;
+ let projects=[];
+ try{projects=projectManagerApi().listProjects(window.localStorage);}
+ catch(error){projectManagerStatus(error.message,true);}
+ const previous=select.value;
+ select.innerHTML='';
+ const placeholder=document.createElement('option');
+ placeholder.value='';
+ placeholder.textContent=projects.length?'Choose a saved project':'No saved projects on this browser';
+ select.appendChild(placeholder);
+ projects.forEach(project=>{
+  const option=document.createElement('option');
+  option.value=project.project_id;
+  option.textContent=project.name+' · '+new Date(project.updated_at).toLocaleString();
+  select.appendChild(option);
+ });
+ if(activeProjectId&&projects.some(project=>project.project_id===activeProjectId))select.value=activeProjectId;
+ else if(previous&&projects.some(project=>project.project_id===previous))select.value=previous;
+ updateProjectControls();
+}
+function updateProjectControls(){
+ const hasStoryboard=Boolean(currentData&&Array.isArray(currentData.ideas)&&currentData.ideas.length);
+ const save=document.getElementById('saveProjectBtn');
+ const exportButton=document.getElementById('exportProjectBtn');
+ const open=document.getElementById('openProjectBtn');
+ const remove=document.getElementById('deleteProjectBtn');
+ const select=document.getElementById('savedProjects');
+ if(save)save.disabled=!hasStoryboard;
+ if(exportButton)exportButton.disabled=!hasStoryboard;
+ const selected=Boolean(select&&select.value);
+ if(open)open.disabled=!selected;
+ if(remove)remove.disabled=!selected;
+}
+function currentStoryboardSnapshot(){
+ if(!currentData)return null;
+ const copy=JSON.parse(JSON.stringify(currentData));
+ const idea=copy.ideas?.[selectedIdea];
+ if(!idea)return copy;
+ const cards=Array.from(document.querySelectorAll('#scenes .scene'));
+ cards.forEach((card,index)=>{
+  const scene=idea.scenes?.[index];
+  if(!scene)return;
+  card.querySelectorAll('textarea[data-k]').forEach(input=>{scene[input.dataset.k]=input.value;});
+ });
+ copy.selected_idea_storyboard={title:idea.title,scenes:idea.scenes||[]};
+ return copy;
+}
+function projectTrackProcessing(prefix){
+ const suffix={trim_start:'TrimStart',trim_end:'TrimEnd',fade_in:'FadeIn',fade_out_start:'FadeOutStart',fade_out:'FadeOut'};
+ const read=name=>Number(document.getElementById(prefix+suffix[name])?.value||0);
+ return {
+  trim_start_seconds:read('trim_start'),
+  trim_end_seconds:read('trim_end'),
+  fade_in_seconds:read('fade_in'),
+  fade_out_start_seconds:read('fade_out_start'),
+  fade_out_seconds:read('fade_out')
+ };
+}
+function selectedFileName(inputId){
+ const input=document.getElementById(inputId);
+ return input?.files?.[0]?.name||input?.dataset.savedFileName||'';
+}
+function collectProjectState(){
+ const storyboard=currentStoryboardSnapshot();
+ if(!storyboard)throw new Error('Analyze a reference and choose a concept before saving a project.');
+ const sfx=Array.from(document.querySelectorAll('.sfx-cue')).map(row=>{
+  const input=row.querySelector('[data-sfx-file]');
+  const read=field=>Number(row.querySelector('[data-sfx-'+field.replaceAll('_','-')+']')?.value||0);
+  return {
+   id:Number(row.dataset.sfxId),
+   file_name:input?.files?.[0]?.name||input?.dataset.savedFileName||'',
+   start_seconds:read('start'),
+   gain:read('gain')/100,
+   processing:{
+    trim_start_seconds:read('trim_start'),
+    trim_end_seconds:read('trim_end'),
+    fade_in_seconds:read('fade_in'),
+    fade_out_start_seconds:read('fade_out_start'),
+    fade_out_seconds:read('fade_out')
+   }
+  };
+ });
+ const cues=subtitleCueRows().map(cue=>({
+  id:cue.id,
+  start:cue.start,
+  end:cue.end,
+  text:cue.text,
+  source_label:cue.row?.querySelector('.subtitle-cue-source')?.textContent||'MANUAL CUE'
+ }));
+ return {
+  reference_file_name:currentReferenceFileName||'',
+  storyboard,
+  selected_idea:selectedIdea,
+  assembly:{
+   aspect_ratio:document.getElementById('assemblyAspect')?.value||'16:9',
+   queue:assemblyQueue.slice(),
+   edits_by_id:JSON.parse(JSON.stringify(assemblyEditsById))
+  },
+  audio:{
+   voiceover:{
+    file_name:selectedFileName('voiceoverFile'),
+    gain:Number(document.getElementById('voiceoverGain')?.value||100)/100,
+    processing:projectTrackProcessing('voiceover')
+   },
+   music:{
+    file_name:selectedFileName('musicFile'),
+    gain:Number(document.getElementById('musicGain')?.value||18)/100,
+    processing:projectTrackProcessing('music')
+   },
+   sfx
+  },
+  subtitles:{
+   enabled:Boolean(document.getElementById('subtitlesEnabled')?.checked),
+   position:document.getElementById('subtitlePosition')?.value||'bottom',
+   color:document.getElementById('subtitleColor')?.value||'white',
+   font_size_ratio:Number(document.getElementById('subtitleSize')?.value||4.5)/100,
+   cues
+  }
+ };
+}
+function makeCurrentProject(){
+ const api=projectManagerApi();
+ const name=document.getElementById('projectName')?.value.trim()||currentData?.ideas?.[selectedIdea]?.title||'Untitled project';
+ return api.createProject({
+  schema_version:api.SCHEMA_VERSION,
+  project_id:activeProjectId||undefined,
+  name,
+  created_at:activeProjectCreatedAt||Date.now(),
+  state:collectProjectState()
+ });
+}
+function saveCurrentProject(){
+ try{
+  const project=makeCurrentProject();
+  const saved=projectManagerApi().saveProject(window.localStorage,project);
+  activeProjectId=saved.project_id;
+  activeProjectCreatedAt=saved.created_at;
+  const name=document.getElementById('projectName');
+  if(name)name.value=saved.name;
+  refreshSavedProjectOptions();
+  projectManagerStatus('Saved on this browser. Export a project JSON backup to move it to another device. Audio/reference files are not embedded; generated clips are reconnected from job history. Owner tokens and API keys are never saved.');
+ }catch(error){projectManagerStatus(error.message,true);}
+}
+function downloadProjectJson(){
+ try{
+  const project=makeCurrentProject();
+  const text=projectManagerApi().serializeProject(project);
+  const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));
+  const link=document.createElement('a');
+  link.href=url;
+  link.download=projectManagerApi().fileName(project.name);
+  link.click();
+  URL.revokeObjectURL(url);
+  projectManagerStatus('Portable project JSON exported. Media files are referenced by name/job ID, not embedded; keep your original audio files and load clip history when reopening.');
+ }catch(error){projectManagerStatus(error.message,true);}
+}
+function restoreNumericValue(id,value){
+ const input=document.getElementById(id);
+ if(input&&value!==undefined&&value!==null)input.value=String(value);
+}
+function restoreAudioFile(inputId,labelId,fileName){
+ const input=document.getElementById(inputId),label=document.getElementById(labelId);
+ if(!input)return;
+ input.value='';
+ input.dataset.savedFileName=String(fileName||'');
+ if(label)label.textContent=fileName?'Re-select file after opening: '+fileName:'No file selected · optional';
+}
+function restoreProjectState(project){
+ const state=project.state||{};
+ if(!state.storyboard)throw new Error('This project does not contain a saved storyboard.');
+ activeProjectId=project.project_id;
+ activeProjectCreatedAt=project.created_at;
+ currentData=state.storyboard;
+ selectedIdea=Number(state.selected_idea)||0;
+ currentReferenceFileName=state.reference_file_name||'';
+ fileInput.value='';
+ const fileTitle=document.getElementById('fileTitle');
+ const fileMeta=document.getElementById('fileMeta');
+ if(fileTitle)fileTitle.textContent=currentReferenceFileName||'Choose a reference video';
+ if(fileMeta)fileMeta.textContent=currentReferenceFileName?'Original reference file is not embedded · re-upload only if you need to analyze again':'MP4 · MOV · WEBM · MKV · AVI · Max 50 MB';
+ const projectName=document.getElementById('projectName');
+ if(projectName)projectName.value=project.name;
+ render(currentData);
+
+ assemblyQueue=(state.assembly?.queue||[]).slice();
+ assemblyEditsById=JSON.parse(JSON.stringify(state.assembly?.edits_by_id||{}));
+ const aspect=document.getElementById('assemblyAspect');
+ if(aspect)aspect.value=state.assembly?.aspect_ratio||'16:9';
+
+ const audio=state.audio||{};
+ const voice=audio.voiceover||{},music=audio.music||{};
+ restoreAudioFile('voiceoverFile','voiceoverFileName',voice.file_name);
+ restoreAudioFile('musicFile','musicFileName',music.file_name);
+ restoreNumericValue('voiceoverGain',Math.round(Number(voice.gain??1)*100));
+ restoreNumericValue('musicGain',Math.round(Number(music.gain??0.18)*100));
+ const suffix={trim_start:'TrimStart',trim_end:'TrimEnd',fade_in:'FadeIn',fade_out_start:'FadeOutStart',fade_out:'FadeOut'};
+ for(const [track,prefix] of [[voice,'voiceover'],[music,'music']]){
+  const processing=track.processing||{};
+  for(const [key,suffixName] of Object.entries(suffix)){
+   const field={trim_start:'trim_start_seconds',trim_end:'trim_end_seconds',fade_in:'fade_in_seconds',fade_out_start:'fade_out_start_seconds',fade_out:'fade_out_seconds'}[key];
+   restoreNumericValue(prefix+suffixName,processing[field]??0);
+  }
+ }
+ const sfxList=document.getElementById('sfxCueList');
+ if(sfxList)sfxList.innerHTML='';
+ (audio.sfx||[]).forEach(cue=>addSfxCue(cue,true));
+
+ const subtitles=state.subtitles||{};
+ const enabled=document.getElementById('subtitlesEnabled');
+ if(enabled)enabled.checked=Boolean(subtitles.enabled);
+ const position=document.getElementById('subtitlePosition');
+ const color=document.getElementById('subtitleColor');
+ const size=document.getElementById('subtitleSize');
+ if(position)position.value=subtitles.position||'bottom';
+ if(color)color.value=subtitles.color||'white';
+ if(size)size.value=String(Number(subtitles.font_size_ratio??0.045)*100);
+ const sizeLabel=document.getElementById('subtitleSizeValue');
+ if(sizeLabel&&size)sizeLabel.textContent=size.value+'%';
+ const subtitleList=document.getElementById('subtitleCueList');
+ if(subtitleList)subtitleList.innerHTML='<p class="subtitle-empty">No captions yet. Add a cue, then enter its start/end time and text.</p>';
+ subtitleCueSequence=0;
+ selectedSubtitleCueIds.clear();
+ (subtitles.cues||[]).forEach(cue=>{
+  const row=addSubtitleCue({
+   id:cue.id,
+   start_seconds:cue.start,
+   end_seconds:cue.end,
+   text:cue.text,
+   source_label:cue.source_label||'RESTORED CAPTION'
+  });
+  if(row&&cue.id)row.dataset.subtitleId=String(cue.id);
+ });
+ selectedSubtitleCueIds.clear();
+ renderSubtitleTimeline();
+ renderSubtitleOverlay(audioTimelinePlayheadSeconds);
+ renderAssemblyQueue();
+ renderAudioTimeline();
+ updateProjectControls();
+
+ const missingAudio=missingRestoredAudioAssets();
+ const unresolvedClips=assemblyQueue.filter(id=>!recentJobsById[id]?.artifact_available);
+ const notes=[];
+ if(currentReferenceFileName)notes.push('The original reference video is not embedded; re-upload it only if you need to run analysis again.');
+ if(missingAudio.length)notes.push('Re-select audio files: '+missingAudio.join(', ')+'. Their names/settings were restored, but media bytes are not stored in the project file.');
+ if(unresolvedClips.length)notes.push('Clip references restored ('+unresolvedClips.length+'); enter the owner token and click Load history to reconnect completed MP4s.');
+ projectManagerStatus('Opened "'+project.name+'". '+(notes.join(' ')||'All saved editing metadata is ready.'));
+}
+function missingRestoredAudioAssets(){
+ const missing=[];
+ [['voiceoverFile','Voiceover'],['musicFile','Background music']].forEach(([id,label])=>{
+  const input=document.getElementById(id);
+  if(input?.dataset.savedFileName&&!input.files?.length)missing.push(label+' ('+input.dataset.savedFileName+')');
+ });
+ document.querySelectorAll('.sfx-cue').forEach(row=>{
+  const input=row.querySelector('[data-sfx-file]');
+  if(input?.dataset.savedFileName&&!input.files?.length)missing.push('SFX '+(Number(row.dataset.sfxId)+1)+' ('+input.dataset.savedFileName+')');
+ });
+ return missing;
+}
+document.getElementById('saveProjectBtn')?.addEventListener('click',saveCurrentProject);
+document.getElementById('exportProjectBtn')?.addEventListener('click',downloadProjectJson);
+document.getElementById('savedProjects')?.addEventListener('change',updateProjectControls);
+document.getElementById('openProjectBtn')?.addEventListener('click',()=>{
+ try{
+  const id=document.getElementById('savedProjects')?.value;
+  const project=projectManagerApi().loadProject(window.localStorage,id);
+  restoreProjectState(project);
+ }catch(error){projectManagerStatus(error.message,true);}
+});
+document.getElementById('deleteProjectBtn')?.addEventListener('click',()=>{
+ try{
+  const select=document.getElementById('savedProjects'),id=select?.value;
+  if(!id)return;
+  if(!window.confirm('Delete this saved project from this browser? This does not delete generated clips or media files.'))return;
+  projectManagerApi().deleteProject(window.localStorage,id);
+  if(activeProjectId===id){activeProjectId=null;activeProjectCreatedAt=null;}
+  refreshSavedProjectOptions();
+  projectManagerStatus('Saved project deleted from this browser. Generated clips and source media were not deleted.');
+ }catch(error){projectManagerStatus(error.message,true);}
+});
+document.getElementById('importProjectFile')?.addEventListener('change',async event=>{
+ const file=event.target.files?.[0];
+ if(!file)return;
+ try{
+  if(file.size>projectManagerApi().MAX_PROJECT_BYTES)throw new Error('Project JSON exceeds the 2 MB import limit.');
+  const project=projectManagerApi().parseProjectFile(await file.text(),{newId:true});
+  restoreProjectState(project);
+  projectManagerStatus('Imported "'+project.name+'" as a new working copy. Save it on this browser or export it as a backup when ready.');
+ }catch(error){projectManagerStatus(error.message,true);}
+ finally{event.target.value='';}
+});
+refreshSavedProjectOptions();
+updateProjectControls();
