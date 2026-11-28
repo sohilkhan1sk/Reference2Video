@@ -1467,6 +1467,8 @@ if(window.Reference2VideoProjectAutosave?.createProjectAutosave){
    else if(state.status==='error')projectManagerStatus('Auto-save failed: '+(state.error?.message||'browser storage is unavailable')+'. Click Save project or export a JSON backup.',true);
   }
  });
+}else{
+ projectManagerStatus('Auto-save helper did not load. Manual Save and JSON export remain available; refresh the page before continuing edits.',true);
 }
 function flushProjectAutosaveBeforeSwitch(){
  if(!projectAutosaveController?.isDirty())return true;
