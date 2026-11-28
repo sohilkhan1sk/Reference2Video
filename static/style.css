@@ -207,3 +207,31 @@
 .subtitle-timeline-status{display:block;margin:4px 0 10px;color:#91abad;font-size:9px;line-height:1.5}
 .subtitle-cue.is-selected{border-color:#c6a95f;box-shadow:inset 0 0 0 1px rgba(242,207,124,.18)}
 @media(max-width:720px){.subtitle-timeline-tools{align-items:flex-start;flex-direction:column}.subtitle-timeline-actions{width:100%}.subtitle-timeline-actions button{flex:1}}
+
+
+/* Browser-local project manager */
+.project-manager{margin-top:20px;padding:16px;border:1px solid #31555a;border-radius:13px;background:linear-gradient(145deg,rgba(23,48,55,.72),rgba(10,25,33,.9));}
+.project-manager-heading,.project-manager-main,.project-manager-open{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;}
+.project-manager-heading{align-items:flex-start;margin-bottom:13px;}
+.project-manager-heading b{font-size:11px;letter-spacing:.12em;color:#bfe6dc;}
+.project-manager-heading p{margin:5px 0 0;color:#9eb6b8;font-size:12px;line-height:1.5;}
+.project-storage-chip{flex:0 0 auto;padding:5px 8px;border:1px solid #426c68;border-radius:99px;color:#a8d8cb;font-size:9px;font-weight:700;letter-spacing:.06em;}
+.project-manager-main{align-items:flex-end;}
+.project-manager-main>label,.project-manager-open>label{display:grid;gap:6px;flex:1;min-width:180px;color:#9eb6b8;font-size:10px;font-weight:700;letter-spacing:.07em;}
+.project-manager-main input[type=text],.project-manager-open select{width:100%;min-width:0;}
+.project-manager-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.project-manager-actions button,.project-manager-open button{min-height:39px;white-space:nowrap;}
+.project-import-label{display:inline-flex;align-items:center;justify-content:center;min-height:39px;padding:0 12px;border:1px solid #416c69;border-radius:8px;background:#142b32;color:#c3e8df;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;}
+.project-import-label:hover{border-color:#7bbcaf;background:#1b3b41;}
+.project-import-label input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;clip-path:inset(50%);}
+.project-manager-open{margin-top:12px;align-items:flex-end;}
+.project-manager-status{display:block;margin-top:11px;color:#9eb6b8;font-size:10px;line-height:1.55;}
+.project-manager-status.is-error{color:#ffb4a7;}
+.project-manager button:disabled{opacity:.42;cursor:not-allowed;}
+@media(max-width:760px){
+ .project-manager-heading,.project-manager-main,.project-manager-open{align-items:stretch;flex-direction:column;}
+ .project-storage-chip{align-self:flex-start;}
+ .project-manager-actions{width:100%;}
+ .project-manager-actions button,.project-import-label{flex:1;}
+ .project-manager-open button{width:100%;}
+}
