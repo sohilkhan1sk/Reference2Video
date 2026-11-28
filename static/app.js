@@ -1434,6 +1434,7 @@ function restoreProjectState(project){
  if(missingAudio.length)notes.push('Re-select audio files: '+missingAudio.join(', ')+'. Their names/settings were restored, but media bytes are not stored in the project file.');
  if(unresolvedClips.length)notes.push('Clip references restored ('+unresolvedClips.length+'); enter the owner token and click Load history to reconnect completed MP4s.');
  projectManagerStatus('Opened "'+project.name+'". '+(notes.join(' ')||'All saved editing metadata is ready.'));
+ return notes;
 }
 function missingRestoredAudioAssets(){
  const missing=[];
@@ -1474,8 +1475,8 @@ document.getElementById('importProjectFile')?.addEventListener('change',async ev
  try{
   if(file.size>projectManagerApi().MAX_PROJECT_BYTES)throw new Error('Project JSON exceeds the 2 MB import limit.');
   const project=projectManagerApi().parseProjectFile(await file.text(),{newId:true});
-  restoreProjectState(project);
-  projectManagerStatus('Imported "'+project.name+'" as a new working copy. Save it on this browser or export it as a backup when ready.');
+  const restoreNotes=restoreProjectState(project);
+  projectManagerStatus('Imported "'+project.name+'" as a new working copy. Save it on this browser or export it as a backup when ready. '+(restoreNotes.join(' ')||'All saved editing metadata is ready.'));
  }catch(error){projectManagerStatus(error.message,true);}
  finally{event.target.value='';}
 });
